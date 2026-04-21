@@ -12,4 +12,8 @@ const (
 
 	// ContextKeyRequestID is the key used to store the request trace ID.
 	ContextKeyRequestID contextKey = "request_id"
+
+	// ContextKeySessionKey is the key used to pass the per-user AES-256
+	// session key through request context (set by encryption middleware).
+	ContextKeySessionKey contextKey = "session_key"
 )

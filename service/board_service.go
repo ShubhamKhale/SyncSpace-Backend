@@ -6,45 +6,69 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"syncspace-backend/errs"
 	"syncspace-backend/model"
+	"syncspace-backend/pkg/utils"
 	"syncspace-backend/service/database"
 	"syncspace-backend/service/operation"
 )
 
 // BoardService orchestrates board-related use cases.
 type BoardService struct {
-	repo *database.BoardRepo
+	repo   *database.BoardRepo
+	logger *ActivityLogger
 }
 
 // NewBoardService creates a BoardService wired to the provided repository.
-func NewBoardService(repo *database.BoardRepo) *BoardService {
-	return &BoardService{repo: repo}
+func NewBoardService(repo *database.BoardRepo, logger *ActivityLogger) *BoardService {
+	return &BoardService{repo: repo, logger: logger}
 }
 
 // CreateBoard validates the input, builds a Board model, and persists it.
-func (s *BoardService) CreateBoard(ctx context.Context, title, description string) (*model.Board, error) {
+// ownerID must be the authenticated user's ID (set by JWT middleware).
+func (s *BoardService) CreateBoard(ctx context.Context, ownerID, title, description string) (*model.Board, error) {
 	if err := operation.ValidateCreateBoard(title, description); err != nil {
 		return nil, err
 	}
 
+	now := time.Now()
 	board := &model.Board{
-		ID:          fmt.Sprintf("board-%d", time.Now().UnixNano()),
+		ID:          utils.NewUUID(),
 		Title:       title,
 		Description: description,
-		CreatedAt:   time.Now(),
+		OwnerID:     ownerID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	if err := s.repo.InsertBoard(ctx, board); err != nil {
 		return nil, err
 	}
 
+	s.logger.LogBoard(ctx, ownerID, board.ID, ActionCreated, map[string]any{
+		"title": title,
+	})
 	return board, nil
 }
 
-// GetBoards retrieves all boards for the workspace.
-func (s *BoardService) GetBoards(ctx context.Context) ([]model.Board, error) {
-	return s.repo.GetBoards(ctx)
+// GetBoardsByOwner retrieves all boards owned by the given user.
+func (s *BoardService) GetBoardsByOwner(ctx context.Context, ownerID string) ([]model.Board, error) {
+	if ownerID == "" {
+		return nil, errs.BadRequest("owner ID is required")
+	}
+	return s.repo.GetBoardsByOwner(ctx, ownerID)
+}
+
+// GetRecentBoards returns up to limit boards for the user, sorted by last update.
+// limit is clamped to [1, 20].
+func (s *BoardService) GetRecentBoards(ctx context.Context, ownerID string, limit int) ([]model.Board, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	return s.repo.GetRecentBoardsByOwner(ctx, ownerID, limit)
 }

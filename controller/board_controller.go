@@ -27,10 +27,11 @@ type createBoardRequest struct {
 	Description string `json:"description"`
 }
 
-// CreateBoard godoc
-// POST /boards
-// Creates a new board and returns the persisted model.
+// CreateBoard handles POST /api/boards.
+// Reads the authenticated user's ID from the JWT context as board owner.
 func (bc *BoardController) CreateBoard(c *gin.Context) {
+	ownerID := mustUserID(c)
+
 	var req createBoardRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.Error(constants.LogTagBoard, "invalid request body", err)
@@ -38,25 +39,26 @@ func (bc *BoardController) CreateBoard(c *gin.Context) {
 		return
 	}
 
-	board, err := bc.svc.CreateBoard(c.Request.Context(), req.Title, req.Description)
+	board, err := bc.svc.CreateBoard(c.Request.Context(), ownerID, req.Title, req.Description)
 	if err != nil {
 		utils.Error(constants.LogTagBoard, "CreateBoard failed", err)
-		c.JSON(http.StatusInternalServerError, data.Fail(err.Error()))
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
 
-	utils.Info(constants.LogTagBoard, "board created", board.ID)
+	utils.Info(constants.LogTagBoard, "board created: "+board.ID)
 	c.JSON(http.StatusCreated, data.OK(board))
 }
 
-// GetBoards godoc
-// GET /boards
-// Returns all boards.
+// GetBoards handles GET /api/boards.
+// Returns all boards owned by the authenticated user.
 func (bc *BoardController) GetBoards(c *gin.Context) {
-	boards, err := bc.svc.GetBoards(c.Request.Context())
+	ownerID := mustUserID(c)
+
+	boards, err := bc.svc.GetBoardsByOwner(c.Request.Context(), ownerID)
 	if err != nil {
 		utils.Error(constants.LogTagBoard, "GetBoards failed", err)
-		c.JSON(http.StatusInternalServerError, data.Fail(err.Error()))
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
 

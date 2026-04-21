@@ -30,3 +30,11 @@ func Internal(msg string) *AppError {
 func BadRequest(msg string) *AppError {
 	return &AppError{Code: "BAD_REQUEST", Message: msg}
 }
+
+func Unauthorized(msg string) *AppError {
+	return &AppError{Code: "UNAUTHORIZED", Message: msg}
+}
+
+func Conflict(msg string) *AppError {
+	return &AppError{Code: "CONFLICT", Message: msg}
+}

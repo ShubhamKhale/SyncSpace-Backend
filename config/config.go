@@ -15,6 +15,7 @@ type Config struct {
 	Port      string
 	DBURL     string
 	JWTSecret string
+	RedisURL  string // redis://:password@host:port/db — optional; disables WebSocket if empty
 }
 
 // Load reads the .env file and returns a populated Config.
@@ -28,6 +29,7 @@ func Load() *Config {
 		Port:      getEnv("PORT", "8080"),
 		DBURL:     getEnv("DB_URL", ""),
 		JWTSecret: getEnv("JWT_SECRET", ""),
+		RedisURL:  getEnv("REDIS_URL", ""),
 	}
 
 	if cfg.DBURL == "" {
