@@ -23,7 +23,8 @@ func NewActivityRepo(db *pgxpool.Pool) *ActivityRepo {
 // ActivityFilter holds optional query filters for listing activity logs.
 // A zero-value (empty string) field means "no filter on this column".
 type ActivityFilter struct {
-	BoardID string // filter by entity_id when entity_type is 'board' or by task's board
+	OrgID   string // scope to boards belonging to this org
+	BoardID string // further filter by a specific board
 	UserID  string // filter by actor_id
 }
 
@@ -36,7 +37,7 @@ func (r *ActivityRepo) InsertActivityLog(ctx context.Context, al *model.Activity
 	}
 
 	_, err = r.db.Exec(ctx,
-		`INSERT INTO activity_logs
+		`INSERT INTO public.activity_logs
 		     (id, entity_type, entity_id, actor_id, action, metadata, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		al.ID, al.EntityType, al.EntityID, al.ActorID, al.Action, meta, al.CreatedAt,
@@ -64,7 +65,10 @@ func (r *ActivityRepo) GetFiltered(
 	f ActivityFilter,
 	limit, offset int,
 ) (*model.ActivityLogPage, error) {
-	var boardArg, userArg *string
+	var orgArg, boardArg, userArg *string
+	if f.OrgID != "" {
+		orgArg = &f.OrgID
+	}
 	if f.BoardID != "" {
 		boardArg = &f.BoardID
 	}
@@ -72,6 +76,9 @@ func (r *ActivityRepo) GetFiltered(
 		userArg = &f.UserID
 	}
 
+	// Resolve entity→board via LEFT JOINs (board-level logs: entity_id IS the board;
+	// task-level logs: entity_id IS the task whose board_id we need).
+	// Eliminates the previous triple-nested OR subquery pattern.
 	rows, err := r.db.Query(ctx,
 		`SELECT
 		     al.id,
@@ -83,20 +90,21 @@ func (r *ActivityRepo) GetFiltered(
 		     al.created_at,
 		     COALESCE(u.name, '') AS actor_name,
 		     COUNT(*) OVER ()     AS total_count
-		 FROM   activity_logs al
-		 JOIN   users u ON u.id = al.actor_id
-		 WHERE  (
-		     $1::text IS NULL
-		     OR al.entity_id = $1
-		     OR (al.entity_type = 'task' AND al.entity_id IN (
-		             SELECT id FROM tasks WHERE board_id = $1
-		         ))
-		 )
-		   AND ($2::text IS NULL OR al.actor_id = $2)
+		 FROM   public.activity_logs al
+		 JOIN   public.users u ON u.id = al.actor_id
+		 LEFT JOIN public.boards b_direct
+		        ON b_direct.id = al.entity_id AND al.entity_type = 'board'
+		 LEFT JOIN public.tasks t_ref
+		        ON t_ref.id = al.entity_id AND al.entity_type = 'task'
+		 LEFT JOIN public.boards b_task
+		        ON b_task.id = t_ref.board_id
+		 WHERE  ($1::text IS NULL OR COALESCE(b_direct.org_id, b_task.org_id) = $1)
+		   AND  ($2::text IS NULL OR COALESCE(b_direct.id,    b_task.id)     = $2)
+		   AND  ($3::text IS NULL OR al.actor_id = $3)
 		 ORDER  BY al.created_at DESC
-		 LIMIT  $3
-		 OFFSET $4`,
-		boardArg, userArg, limit, offset,
+		 LIMIT  $4
+		 OFFSET $5`,
+		orgArg, boardArg, userArg, limit, offset,
 	)
 	if err != nil {
 		return nil, errs.Internal("failed to query activity logs")

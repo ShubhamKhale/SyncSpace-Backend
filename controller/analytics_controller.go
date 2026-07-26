@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,7 +13,6 @@ import (
 )
 
 // AnalyticsController handles the analytics endpoints.
-// All handlers are read-only and require JWT authentication.
 type AnalyticsController struct {
 	svc *service.AnalyticsService
 }
@@ -22,88 +22,126 @@ func NewAnalyticsController(svc *service.AnalyticsService) *AnalyticsController 
 	return &AnalyticsController{svc: svc}
 }
 
-// GetTaskCompletionTrend handles GET /api/analytics/task-completion.
-//
-// Query params:
-//
-//	?period=week|month|quarter  (default: week)
-//	?board_id=<id>              (default: all owned boards)
+// ── Existing endpoints (kept) ─────────────────────────────────────────────────
+
+// GetTaskCompletionTrend handles GET /api/analytics/task-completion (daily, period-based).
 func (a *AnalyticsController) GetTaskCompletionTrend(c *gin.Context) {
-	userID  := mustUserID(c)
-	period  := validPeriod(c.Query("period"))
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+	period := validPeriod(c.Query("period"))
 	boardID := c.Query("board_id")
 
-	points, err := a.svc.GetTaskCompletionTrend(c.Request.Context(), userID, period, boardID)
+	points, err := a.svc.GetTaskCompletionTrend(c.Request.Context(), orgIDStr, period, boardID)
 	if err != nil {
-		utils.Error(constants.LogTagAnalytics, "GetTaskCompletionTrend failed for "+userID, err)
+		utils.Error(constants.LogTagAnalytics, "GetTaskCompletionTrend failed", err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
+	c.JSON(http.StatusOK, data.OK(points))
+}
 
+// ── New dashboard analytics endpoints ────────────────────────────────────────
+
+// GetTaskCompletionTrendMonthly handles GET /api/analytics/task-completion-trend.
+// Returns last 7 months with created + completed counts.
+func (a *AnalyticsController) GetTaskCompletionTrendMonthly(c *gin.Context) {
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+	if orgIDStr == "" {
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
+		return
+	}
+
+	points, err := a.svc.GetMonthlyTaskTrend(c.Request.Context(), orgIDStr)
+	if err != nil {
+		utils.Error(constants.LogTagAnalytics, "GetTaskCompletionTrendMonthly failed", err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
 	c.JSON(http.StatusOK, data.OK(points))
 }
 
 // GetTaskDistribution handles GET /api/analytics/task-distribution.
-//
-// Query params:
-//
-//	?board_id=<id>  (default: all owned boards)
+// Returns task counts grouped by stage as {name, value} pairs.
 func (a *AnalyticsController) GetTaskDistribution(c *gin.Context) {
-	userID  := mustUserID(c)
-	boardID := c.Query("board_id")
-
-	dist, err := a.svc.GetTaskDistribution(c.Request.Context(), userID, boardID)
-	if err != nil {
-		utils.Error(constants.LogTagAnalytics, "GetTaskDistribution failed for "+userID, err)
-		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+	if orgIDStr == "" {
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
 		return
 	}
 
+	dist, err := a.svc.GetTaskDistributionByStage(c.Request.Context(), orgIDStr)
+	if err != nil {
+		utils.Error(constants.LogTagAnalytics, "GetTaskDistribution failed", err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
 	c.JSON(http.StatusOK, data.OK(dist))
 }
 
 // GetBoardActivity handles GET /api/analytics/board-activity.
-//
-// Query params:
-//
-//	?period=week|month|quarter  (default: week)
-//	?board_id=<id>              (default: all owned boards)
+// Returns top 5 boards with edits/comments/shares counts.
 func (a *AnalyticsController) GetBoardActivity(c *gin.Context) {
-	userID  := mustUserID(c)
-	period  := validPeriod(c.Query("period"))
-	boardID := c.Query("board_id")
-
-	points, err := a.svc.GetBoardActivity(c.Request.Context(), userID, period, boardID)
-	if err != nil {
-		utils.Error(constants.LogTagAnalytics, "GetBoardActivity failed for "+userID, err)
-		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+	if orgIDStr == "" {
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
 		return
 	}
 
-	c.JSON(http.StatusOK, data.OK(points))
+	items, err := a.svc.GetBoardActivityStats(c.Request.Context(), orgIDStr)
+	if err != nil {
+		utils.Error(constants.LogTagAnalytics, "GetBoardActivity failed", err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+	c.JSON(http.StatusOK, data.OK(items))
 }
 
 // GetTeamContribution handles GET /api/analytics/team-contribution.
-//
-// Query params:
-//
-//	?board_id=<id>  (default: all owned boards)
+// Returns radar-chart data with dynamic member keys.
 func (a *AnalyticsController) GetTeamContribution(c *gin.Context) {
-	userID  := mustUserID(c)
-	boardID := c.Query("board_id")
-
-	contribs, err := a.svc.GetTeamContribution(c.Request.Context(), userID, boardID)
-	if err != nil {
-		utils.Error(constants.LogTagAnalytics, "GetTeamContribution failed for "+userID, err)
-		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+	if orgIDStr == "" {
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
 		return
 	}
 
-	c.JSON(http.StatusOK, data.OK(contribs))
+	result, err := a.svc.GetTeamContributionByPhase(c.Request.Context(), orgIDStr)
+	if err != nil {
+		utils.Error(constants.LogTagAnalytics, "GetTeamContribution failed", err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+	c.JSON(http.StatusOK, data.OK(result))
+}
+
+// GetDashboardAnalytics handles GET /api/analytics/dashboard.
+// Returns all 4 datasets in a single response.
+func (a *AnalyticsController) GetDashboardAnalytics(c *gin.Context) {
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+
+	fmt.Println("orgIDStr:", orgIDStr) // Debug log to check orgIDStr value
+
+	if orgIDStr == "" {
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
+		return
+	}
+
+	dashboard, err := a.svc.GetDashboardAnalytics(c.Request.Context(), orgIDStr)
+	if err != nil {
+		fmt.Println("Error fetching dashboard analytics:", err.Error()) // Debug log to check error details
+		utils.Error(constants.LogTagAnalytics, "GetDashboardAnalytics failed", err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+	c.JSON(http.StatusOK, data.OK(dashboard))
 }
 
 // validPeriod normalises the ?period= query param.
-// Accepted values are "week", "month", "quarter"; anything else defaults to "week".
 func validPeriod(p string) string {
 	switch p {
 	case "month", "quarter":

@@ -181,6 +181,46 @@ func (h *Hub) handleClientMessage(c *Client, msg Message) {
 			Type:    TypeCursorMove,
 			Payload: mustMarshal(p),
 		})
+
+	case TypePresentationStart:
+		var p PresentationStartPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil || p.FlowID == "" {
+			c.enqueue(errMsg("presentation.start requires {\"flow_id\":\"...\",\"presenter_name\":\"...\"}"))
+			return
+		}
+		h.publishChannel(context.Background(), redisChanFlow+p.FlowID, c.userID, Message{
+			Type: TypePresentationStarted,
+			Payload: mustMarshal(PresentationStartedPayload{
+				FlowID:        p.FlowID,
+				PresenterID:   c.userID,
+				PresenterName: p.PresenterName,
+			}),
+		})
+
+	case TypePresentationStop:
+		var p FlowActionPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil || p.FlowID == "" {
+			return
+		}
+		h.publishChannel(context.Background(), redisChanFlow+p.FlowID, c.userID, Message{
+			Type:    TypePresentationStopped,
+			Payload: mustMarshal(PresentationStoppedPayload{FlowID: p.FlowID}),
+		})
+
+	case TypePresentationSlide:
+		var p PresentationSlidePayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil || p.FlowID == "" {
+			return
+		}
+		h.publishChannel(context.Background(), redisChanFlow+p.FlowID, c.userID, Message{
+			Type: TypePresentationSlide,
+			Payload: mustMarshal(PresentationSlideOutPayload{
+				FlowID:      p.FlowID,
+				NodeID:      p.NodeID,
+				SlideIndex:  p.SlideIndex,
+				PresenterID: c.userID,
+			}),
+		})
 	}
 }
 
@@ -235,19 +275,27 @@ func (h *Hub) flowUserIDs(flowID, excludeUserID string) []string {
 // PublishToUser publishes msg to all instances for a specific user.
 // Call this from services (e.g. notification service) to push real-time updates.
 func (h *Hub) PublishToUser(ctx context.Context, userID string, msg Message) {
-	h.publishChannel(ctx, redisChanUser+userID, msg)
+	h.publishChannel(ctx, redisChanUser+userID, "", msg)
+}
+
+// PublishToFlowExcluding broadcasts msg to all flow participants except senderID.
+// Safe to call when hub is nil (no-op). Use after a successful DB write to avoid
+// broadcasting on validation or auth failures.
+func (h *Hub) PublishToFlowExcluding(ctx context.Context, flowID, senderID string, msg Message) {
+	h.publishChannel(ctx, redisChanFlow+flowID, senderID, msg)
 }
 
 // publishFlow publishes a flow-scoped message to all instances.
 func (h *Hub) publishFlow(ctx context.Context, flowID string, msg Message) {
-	h.publishChannel(ctx, redisChanFlow+flowID, msg)
+	h.publishChannel(ctx, redisChanFlow+flowID, "", msg)
 }
 
-func (h *Hub) publishChannel(ctx context.Context, channel string, msg Message) {
+func (h *Hub) publishChannel(ctx context.Context, channel, excludeUserID string, msg Message) {
 	env := RedisEnvelope{
-		SourceID: h.serverID,
-		Channel:  channel,
-		Msg:      msg,
+		SourceID:      h.serverID,
+		Channel:       channel,
+		Msg:           msg,
+		ExcludeUserID: excludeUserID,
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -302,6 +350,6 @@ func (h *Hub) deliverLocal(env RedisEnvelope) {
 
 	case len(env.Channel) > len(redisChanFlow) && env.Channel[:len(redisChanFlow)] == redisChanFlow:
 		flowID := env.Channel[len(redisChanFlow):]
-		h.deliverToFlow(flowID, "", env.Msg)
+		h.deliverToFlow(flowID, env.ExcludeUserID, env.Msg)
 	}
 }

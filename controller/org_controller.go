@@ -23,8 +23,10 @@ func NewOrgController(svc *service.OrgService) *OrgController {
 
 // ── Request types ─────────────────────────────────────────────────────────────
 
-// updateOrgRequest uses pointer fields for true partial updates.
-// At least one field must be non-nil or the handler returns 400.
+type createOrgRequest struct {
+	Name string `json:"name" binding:"required,max=255"`
+}
+
 type updateOrgRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
@@ -36,15 +38,51 @@ type inviteMemberRequest struct {
 	Role  string `json:"role"   binding:"required"`
 }
 
+type sendInviteRequest struct {
+	Email string `json:"email" binding:"required,email"`
+	Role  string `json:"role"  binding:"required"`
+}
+
 type updateMemberRoleRequest struct {
 	Role string `json:"role" binding:"required"`
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// mustOrgID reads the org ID from the OrgContext middleware.
+// Returns empty string if user has no org (caller must handle).
+func mustOrgID(c *gin.Context) string {
+	val, _ := c.Get(string(constants.ContextKeyOrgID))
+	if val == nil {
+		return ""
+	}
+	return val.(string)
+}
+
+// ── Organization handlers ─────────────────────────────────────────────────────
+
+// CreateOrganization handles POST /api/organization.
+func (oc *OrgController) CreateOrganization(c *gin.Context) {
+	callerID := mustUserID(c)
+
+	var req createOrgRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, data.Fail(err.Error()))
+		return
+	}
+
+	org, err := oc.svc.CreateOrg(c.Request.Context(), callerID, req.Name)
+	if err != nil {
+		utils.Error(constants.LogTagOrg, "CreateOrganization failed for "+callerID, err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+
+	utils.Info(constants.LogTagOrg, "organization created: "+org.ID+" by "+callerID)
+	c.JSON(http.StatusCreated, data.OK(gin.H{"id": org.ID, "name": org.Name}))
+}
 
 // GetOrganization handles GET /api/organization.
-// Returns every organization the authenticated user belongs to, together with
-// their role in each (owner | admin | member | viewer).
 func (oc *OrgController) GetOrganization(c *gin.Context) {
 	callerID := mustUserID(c)
 
@@ -59,8 +97,6 @@ func (oc *OrgController) GetOrganization(c *gin.Context) {
 }
 
 // UpdateOrganization handles PATCH /api/organization/:id.
-// Updates the name and/or description of the specified organization.
-// The caller must hold the "owner" or "admin" role — the service enforces this.
 func (oc *OrgController) UpdateOrganization(c *gin.Context) {
 	callerID := mustUserID(c)
 	orgID := c.Param("id")
@@ -82,7 +118,7 @@ func (oc *OrgController) UpdateOrganization(c *gin.Context) {
 
 	org, err := oc.svc.UpdateOrg(c.Request.Context(), callerID, orgID, req.Name, req.Description)
 	if err != nil {
-		utils.Error(constants.LogTagOrg, "UpdateOrganization failed org="+orgID+" caller="+callerID, err)
+		utils.Error(constants.LogTagOrg, "UpdateOrganization failed org="+orgID, err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
@@ -93,13 +129,13 @@ func (oc *OrgController) UpdateOrganization(c *gin.Context) {
 
 // ── Member handlers ───────────────────────────────────────────────────────────
 
-// GetMembers handles GET /api/organization/members?org_id=xxx.
-// Any member of the organization can list members (with their status and role).
+// GetMembers handles GET /api/organization/members.
+// orgID is read from OrgContext middleware — no query param needed.
 func (oc *OrgController) GetMembers(c *gin.Context) {
 	callerID := mustUserID(c)
-	orgID := c.Query("org_id")
+	orgID := mustOrgID(c)
 	if orgID == "" {
-		c.JSON(http.StatusBadRequest, data.Fail("org_id query parameter is required"))
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
 		return
 	}
 
@@ -113,9 +149,7 @@ func (oc *OrgController) GetMembers(c *gin.Context) {
 	c.JSON(http.StatusOK, data.OK(members))
 }
 
-// InviteMember handles POST /api/organization/members/invite.
-// Looks up the target user by email and creates a membership with status "invited".
-// Only owner / admin may invite.
+// InviteMember handles POST /api/organization/members/invite (direct membership invite).
 func (oc *OrgController) InviteMember(c *gin.Context) {
 	callerID := mustUserID(c)
 
@@ -127,24 +161,63 @@ func (oc *OrgController) InviteMember(c *gin.Context) {
 
 	detail, err := oc.svc.InviteMember(c.Request.Context(), callerID, req.OrgID, req.Email, req.Role)
 	if err != nil {
-		utils.Error(constants.LogTagOrg, "InviteMember failed org="+req.OrgID+" email="+req.Email, err)
+		utils.Error(constants.LogTagOrg, "InviteMember failed org="+req.OrgID, err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
 
-	utils.Info(constants.LogTagOrg, "member invited: "+req.Email+" to org "+req.OrgID+" by "+callerID)
+	utils.Info(constants.LogTagOrg, "member invited: "+req.Email+" to org "+req.OrgID)
 	c.JSON(http.StatusCreated, data.OK(detail))
 }
 
-// UpdateMemberRole handles PATCH /api/organization/members/:id/role?org_id=xxx.
-// :id is the target member's user ID. Only owner / admin may change roles.
-func (oc *OrgController) UpdateMemberRole(c *gin.Context) {
-	callerID    := mustUserID(c)
-	targetUserID := c.Param("id")
-	orgID        := c.Query("org_id")
+// SendInvite handles POST /api/organization/invite (token-link invite flow).
+func (oc *OrgController) SendInvite(c *gin.Context) {
+	callerID := mustUserID(c)
 
+	var req sendInviteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, data.Fail(err.Error()))
+		return
+	}
+
+	invite, err := oc.svc.SendInvite(c.Request.Context(), callerID, req.Email, req.Role)
+	if err != nil {
+		utils.Error(constants.LogTagOrg, "SendInvite failed caller="+callerID, err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+
+	utils.Info(constants.LogTagOrg, "invite token created for "+req.Email+" by "+callerID)
+	c.JSON(http.StatusCreated, data.OK(gin.H{"inviteId": invite.ID, "token": invite.Token}))
+}
+
+// VerifyInvite handles GET /api/organization/invite/verify?token=<uuid>.
+// Public endpoint — no JWT required.
+func (oc *OrgController) VerifyInvite(c *gin.Context) {
+	token := c.Query("token")
+	if token == "" {
+		c.JSON(http.StatusBadRequest, data.Fail("token query parameter is required"))
+		return
+	}
+
+	result, err := oc.svc.VerifyInvite(c.Request.Context(), token)
+	if err != nil {
+		utils.Error(constants.LogTagOrg, "VerifyInvite failed", err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+
+	c.JSON(http.StatusOK, data.OK(result))
+}
+
+// UpdateMemberRole handles PATCH /api/organization/members/:id/role.
+// orgID read from OrgContext middleware.
+func (oc *OrgController) UpdateMemberRole(c *gin.Context) {
+	callerID := mustUserID(c)
+	targetUserID := c.Param("id")
+	orgID := mustOrgID(c)
 	if orgID == "" {
-		c.JSON(http.StatusBadRequest, data.Fail("org_id query parameter is required"))
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
 		return
 	}
 
@@ -155,34 +228,32 @@ func (oc *OrgController) UpdateMemberRole(c *gin.Context) {
 	}
 
 	if err := oc.svc.UpdateMemberRole(c.Request.Context(), callerID, orgID, targetUserID, req.Role); err != nil {
-		utils.Error(constants.LogTagOrg, "UpdateMemberRole failed user="+targetUserID+" org="+orgID, err)
+		utils.Error(constants.LogTagOrg, "UpdateMemberRole failed user="+targetUserID, err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
 
-	utils.Info(constants.LogTagOrg, "role updated: user="+targetUserID+" role="+req.Role+" org="+orgID+" by "+callerID)
+	utils.Info(constants.LogTagOrg, "role updated: user="+targetUserID+" role="+req.Role)
 	c.JSON(http.StatusOK, data.OK(gin.H{"user_id": targetUserID, "role": req.Role}))
 }
 
-// RemoveMember handles DELETE /api/organization/members/:id?org_id=xxx.
-// :id is the target member's user ID.
-// Any member may remove themselves (self-leave). Removing others requires owner / admin.
+// RemoveMember handles DELETE /api/organization/members/:id.
+// orgID read from OrgContext middleware.
 func (oc *OrgController) RemoveMember(c *gin.Context) {
-	callerID     := mustUserID(c)
+	callerID := mustUserID(c)
 	targetUserID := c.Param("id")
-	orgID         := c.Query("org_id")
-
+	orgID := mustOrgID(c)
 	if orgID == "" {
-		c.JSON(http.StatusBadRequest, data.Fail("org_id query parameter is required"))
+		c.JSON(http.StatusForbidden, data.Fail("you must belong to an organization"))
 		return
 	}
 
 	if err := oc.svc.RemoveMember(c.Request.Context(), callerID, orgID, targetUserID); err != nil {
-		utils.Error(constants.LogTagOrg, "RemoveMember failed user="+targetUserID+" org="+orgID, err)
+		utils.Error(constants.LogTagOrg, "RemoveMember failed user="+targetUserID, err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
 
-	utils.Info(constants.LogTagOrg, "member removed: user="+targetUserID+" from org "+orgID+" by "+callerID)
+	utils.Info(constants.LogTagOrg, "member removed: user="+targetUserID+" from org "+orgID)
 	c.JSON(http.StatusOK, data.OK(gin.H{"removed": true}))
 }

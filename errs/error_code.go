@@ -38,3 +38,7 @@ func Unauthorized(msg string) *AppError {
 func Conflict(msg string) *AppError {
 	return &AppError{Code: "CONFLICT", Message: msg}
 }
+
+func Forbidden(msg string) *AppError {
+	return &AppError{Code: "FORBIDDEN", Message: msg}
+}

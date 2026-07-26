@@ -1,22 +1,19 @@
 // main is the application entry point.
-// Responsibilities:
-//  1. Load configuration from the environment
-//  2. Connect to the database
-//  3. Wire dependencies (repo → service → controller)
-//  4. Register routes
-//  5. Start the HTTP server
 package main
 
 import (
 	"context"
 	"log"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
 	"syncspace-backend/config"
 	"syncspace-backend/constants"
 	"syncspace-backend/controller"
 	"syncspace-backend/pkg/db"
+	pkgcloudinary "syncspace-backend/pkg/cloudinary"
+	pkgemail "syncspace-backend/pkg/email"
 	pkgredis "syncspace-backend/pkg/redis"
 	"syncspace-backend/pkg/utils"
 	pkgws "syncspace-backend/pkg/ws"
@@ -39,7 +36,7 @@ func main() {
 	defer db.Close()
 	utils.Info(constants.LogTagDB, "database connected")
 
-	// ── 2b. Redis (optional — WebSocket disabled when REDIS_URL is unset) ─────
+	// ── 2b. Redis (optional) ──────────────────────────────────────────────────
 	var hub *pkgws.Hub
 	if cfg.RedisURL != "" {
 		if err := pkgredis.Connect(ctx, cfg.RedisURL); err != nil {
@@ -57,58 +54,105 @@ func main() {
 	}
 
 	// ── 3. Dependency injection ───────────────────────────────────────────────
-	// Session store — in-memory AES key registry (no DB)
 	store := session.NewStore()
 
 	// Repos
-	userRepo      := database.NewUserRepo(db.Pool)
-	boardRepo     := database.NewBoardRepo(db.Pool)
-	orgRepo       := database.NewOrgRepo(db.Pool)
-	taskRepo      := database.NewTaskRepo(db.Pool)
-	dashboardRepo  := database.NewDashboardRepo(db.Pool)
-	activityRepo   := database.NewActivityRepo(db.Pool)
-	analyticsRepo     := database.NewAnalyticsRepo(db.Pool)
+	userRepo            := database.NewUserRepo(db.Pool)
+	userPrefsRepo       := database.NewUserPrefsRepo(db.Pool)
+	boardRepo           := database.NewBoardRepo(db.Pool)
+	orgRepo             := database.NewOrgRepo(db.Pool)
+	inviteTokenRepo     := database.NewInviteTokenRepo(db.Pool)
+	taskRepo            := database.NewTaskRepo(db.Pool)
+	dashboardRepo       := database.NewDashboardRepo(db.Pool)
+	activityRepo        := database.NewActivityRepo(db.Pool)
+	analyticsRepo       := database.NewAnalyticsRepo(db.Pool)
 	notificationRepo    := database.NewNotificationRepo(db.Pool)
 	linkedResourceRepo  := database.NewLinkedResourceRepo(db.Pool)
 	flowRepo            := database.NewFlowRepo(db.Pool)
 	flowVoteRepo        := database.NewFlowVoteRepo(db.Pool)
+	boardFlowVoteRepo   := database.NewBoardFlowVoteRepo(db.Pool)
 
-	// Activity logger — injected into services that perform writes
 	activityLogger := service.NewActivityLogger(activityRepo)
 
+	// Email
+	emailTemplateRepo := database.NewEmailTemplateRepo(db.Pool)
+	var mailer *pkgemail.Mailer
+	if cfg.BrevoAPIKey != "" {
+		mailer = pkgemail.NewMailer(cfg.BrevoAPIKey, cfg.BrevoFromEmail, cfg.BrevoFromName)
+		utils.Info("[EMAIL]", "Brevo mailer initialised from="+cfg.BrevoFromEmail)
+	} else {
+		utils.Info("[EMAIL]", "BREVO_API_KEY not set — invite emails disabled")
+	}
+
+	// Cloudinary
+	var cldUploader *pkgcloudinary.Uploader
+	if cfg.CloudinaryCloudName != "" {
+		var err error
+		cldUploader, err = pkgcloudinary.NewUploader(cfg.CloudinaryCloudName, cfg.CloudinaryAPIKey, cfg.CloudinaryAPISecret)
+		if err != nil {
+			log.Fatalf("[CLOUDINARY] failed to init: %v", err)
+		}
+		utils.Info("[CLOUDINARY]", "uploader initialised cloud="+cfg.CloudinaryCloudName)
+	} else {
+		utils.Info("[CLOUDINARY]", "CLOUDINARY_CLOUD_NAME not set — avatar upload disabled")
+	}
+
 	// Services
-	authSvc      := service.NewAuthService(userRepo, store, cfg.JWTSecret)
-	userSvc      := service.NewUserService(userRepo)
-	boardSvc     := service.NewBoardService(boardRepo, activityLogger)
-	orgSvc       := service.NewOrgService(orgRepo, userRepo)
-	taskSvc      := service.NewTaskService(taskRepo, activityLogger)
-	dashboardSvc  := service.NewDashboardService(dashboardRepo, boardRepo, taskRepo)
-	activitySvc   := service.NewActivityService(activityRepo)
+	authSvc          := service.NewAuthService(userRepo, orgRepo, inviteTokenRepo, store, cfg.JWTSecret)
+	userSvc          := service.NewUserService(userRepo, userPrefsRepo)
+	boardSvc         := service.NewBoardService(boardRepo, activityLogger)
+	orgSvc           := service.NewOrgService(orgRepo, userRepo, inviteTokenRepo, emailTemplateRepo, mailer, cfg.FrontendURL)
+	taskSvc          := service.NewTaskService(taskRepo, activityLogger)
+	dashboardSvc     := service.NewDashboardService(dashboardRepo, boardRepo, taskRepo)
+	activitySvc      := service.NewActivityService(activityRepo)
 	analyticsSvc     := service.NewAnalyticsService(analyticsRepo)
-	notificationSvc      := service.NewNotificationService(notificationRepo)
-	linkedResourceSvc    := service.NewLinkedResourceService(linkedResourceRepo, boardRepo, activityLogger)
-	flowSvc              := service.NewFlowService(flowRepo)
-	flowVoteSvc          := service.NewFlowVoteService(flowVoteRepo, flowRepo)
+	notificationSvc  := service.NewNotificationService(notificationRepo)
+	linkedResourceSvc := service.NewLinkedResourceService(linkedResourceRepo, boardRepo, activityLogger)
+	flowSvc          := service.NewFlowService(flowRepo)
+	flowVoteSvc      := service.NewFlowVoteService(flowVoteRepo, flowRepo)
+	boardFlowSvc     := service.NewBoardFlowService(database.NewBoardFlowRepo(db.Pool), boardRepo)
+	boardFlowVoteSvc := service.NewBoardFlowVoteService(boardFlowVoteRepo, boardRepo)
+	var presenceSvc  *service.PresenceService
+	if pkgredis.Client != nil {
+		presenceSvc = service.NewPresenceService(pkgredis.Client, userRepo)
+	}
 
 	// Controllers
-	healthCtrl       := controller.NewHealthController()
-	authCtrl         := controller.NewAuthController(authSvc)
-	userCtrl         := controller.NewUserController(userSvc)
-	boardCtrl        := controller.NewBoardController(boardSvc)
-	orgCtrl          := controller.NewOrgController(orgSvc)
-	taskCtrl         := controller.NewTaskController(taskSvc)
-	dashboardCtrl    := controller.NewDashboardController(dashboardSvc)
-	activityCtrl     := controller.NewActivityController(activitySvc)
-	analyticsCtrl    := controller.NewAnalyticsController(analyticsSvc)
+	healthCtrl          := controller.NewHealthController()
+	authCtrl            := controller.NewAuthController(authSvc)
+	userCtrl            := controller.NewUserController(userSvc, cldUploader)
+	boardCtrl           := controller.NewBoardController(boardSvc)
+	orgCtrl             := controller.NewOrgController(orgSvc)
+	taskCtrl            := controller.NewTaskController(taskSvc)
+	dashboardCtrl       := controller.NewDashboardController(dashboardSvc)
+	activityCtrl        := controller.NewActivityController(activitySvc)
+	analyticsCtrl       := controller.NewAnalyticsController(analyticsSvc)
 	notificationCtrl    := controller.NewNotificationController(notificationSvc)
 	linkedResourceCtrl  := controller.NewLinkedResourceController(linkedResourceSvc)
 	flowCtrl            := controller.NewFlowController(flowSvc)
 	flowVoteCtrl        := controller.NewFlowVoteController(flowVoteSvc)
+	boardFlowCtrl       := controller.NewBoardFlowController(boardFlowSvc, hub)
+	boardFlowVoteCtrl   := controller.NewBoardFlowVoteController(boardFlowVoteSvc)
+	presenceCtrl        := controller.NewPresenceController(presenceSvc)
 	wsCtrl              := controller.NewWsController(hub, cfg.JWTSecret)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
 	r := gin.Default()
-	routes.SetupRoutes(r, cfg, healthCtrl, boardCtrl, authCtrl, userCtrl, orgCtrl, taskCtrl, dashboardCtrl, activityCtrl, analyticsCtrl, notificationCtrl, linkedResourceCtrl, flowCtrl, flowVoteCtrl, wsCtrl, store)
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "Cache-Control", "X-Requested-With", "X-User-ID"},
+		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           12 * 60 * 60, // 12h in seconds
+	}))
+	routes.SetupRoutes(
+		r, cfg, orgRepo,
+		healthCtrl, boardCtrl, authCtrl, userCtrl, orgCtrl,
+		taskCtrl, dashboardCtrl, activityCtrl, analyticsCtrl,
+		notificationCtrl, linkedResourceCtrl, flowCtrl, flowVoteCtrl,
+		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, store,
+	)
 
 	// ── 5. Start server ───────────────────────────────────────────────────────
 	addr := ":" + cfg.Port

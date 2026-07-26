@@ -95,7 +95,7 @@ func (wc *WsController) parseToken(tokenStr string) (string, error) {
 		return "", jwt.ErrInvalidType
 	}
 
-	userID, _ := claims["user_id"].(string)
+	userID, _ := claims["sub"].(string)
 	if userID == "" {
 		return "", jwt.ErrInvalidType
 	}

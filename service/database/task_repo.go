@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -30,20 +31,35 @@ func NewTaskRepo(db *pgxpool.Pool) *TaskRepo {
 	return &TaskRepo{db: db}
 }
 
-// scanTask reads one task row in the standard column order.
-func scanTask(row pgx.Row) (*model.Task, error) {
+// taskCols is the canonical SELECT column list for task rows.
+const taskCols = `id, board_id, title, description, stage, priority,
+       COALESCE(assignee_id,''), created_by, position, due_date, start_date,
+       tags, time_estimate, reference_link, flow_diagram_link,
+       subtasks, attachments, created_at, updated_at`
+
+// scanTaskRow reads one task row in taskCols order.
+func scanTaskRow(scan func(dest ...any) error) (*model.Task, error) {
 	t := &model.Task{}
-	err := row.Scan(
+	var tagsRaw, subtasksRaw, attachmentsRaw json.RawMessage
+	err := scan(
 		&t.ID, &t.BoardID, &t.Title, &t.Description,
 		&t.Stage, &t.Priority, &t.AssigneeID,
-		&t.CreatedBy, &t.Position, &t.DueDate,
+		&t.CreatedBy, &t.Position, &t.DueDate, &t.StartDate,
+		&tagsRaw, &t.TimeEstimate, &t.ReferenceLink, &t.FlowDiagramLink,
+		&subtasksRaw, &attachmentsRaw,
 		&t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errs.NotFound("task not found")
-		}
-		return nil, errs.Internal("failed to scan task")
+		return nil, err
+	}
+	if err := json.Unmarshal(tagsRaw, &t.Tags); err != nil || t.Tags == nil {
+		t.Tags = []string{}
+	}
+	if err := json.Unmarshal(subtasksRaw, &t.Subtasks); err != nil || t.Subtasks == nil {
+		t.Subtasks = []model.Subtask{}
+	}
+	if err := json.Unmarshal(attachmentsRaw, &t.Attachments); err != nil || t.Attachments == nil {
+		t.Attachments = []model.Attachment{}
 	}
 	return t, nil
 }
@@ -51,23 +67,40 @@ func scanTask(row pgx.Row) (*model.Task, error) {
 // InsertTask persists a new task. Position is set to the next available slot
 // in the given stage column so new tasks always appear at the bottom.
 func (r *TaskRepo) InsertTask(ctx context.Context, task *model.Task) error {
-	// Append-to-bottom: count existing tasks in this stage to derive position.
 	var maxPos int
 	_ = r.db.QueryRow(ctx,
 		`SELECT COALESCE(MAX(position) + 1, 0)
-		 FROM tasks WHERE board_id = $1 AND stage = $2`,
+		 FROM public.tasks WHERE board_id = $1 AND stage = $2`,
 		task.BoardID, task.Stage,
 	).Scan(&maxPos)
 	task.Position = maxPos
 
+	tagsJSON, _ := json.Marshal(task.Tags)
+	if task.Tags == nil {
+		tagsJSON = []byte("[]")
+	}
+	subtasksJSON, _ := json.Marshal(task.Subtasks)
+	if task.Subtasks == nil {
+		subtasksJSON = []byte("[]")
+	}
+	attachmentsJSON, _ := json.Marshal(task.Attachments)
+	if task.Attachments == nil {
+		attachmentsJSON = []byte("[]")
+	}
+
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO tasks
+		`INSERT INTO public.tasks
 		     (id, board_id, title, description, stage, priority,
-		      assignee_id, created_by, position, due_date, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12)`,
+		      assignee_id, created_by, position, due_date, start_date,
+		      tags, time_estimate, reference_link, flow_diagram_link,
+		      subtasks, attachments, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		task.ID, task.BoardID, task.Title, task.Description,
 		task.Stage, task.Priority, task.AssigneeID, task.CreatedBy,
-		task.Position, task.DueDate, task.CreatedAt, task.UpdatedAt,
+		task.Position, task.DueDate, task.StartDate,
+		json.RawMessage(tagsJSON), task.TimeEstimate, task.ReferenceLink, task.FlowDiagramLink,
+		json.RawMessage(subtasksJSON), json.RawMessage(attachmentsJSON),
+		task.CreatedAt, task.UpdatedAt,
 	)
 	if err != nil {
 		return errs.Internal("failed to insert task")
@@ -78,18 +111,21 @@ func (r *TaskRepo) InsertTask(ctx context.Context, task *model.Task) error {
 // GetTaskByID returns a single task, or errs.NotFound.
 func (r *TaskRepo) GetTaskByID(ctx context.Context, id string) (*model.Task, error) {
 	row := r.db.QueryRow(ctx,
-		`SELECT id, board_id, title, description, stage, priority,
-		        COALESCE(assignee_id,''), created_by, position, due_date, created_at, updated_at
-		 FROM tasks WHERE id = $1`,
-		id,
+		`SELECT `+taskCols+` FROM public.tasks WHERE id = $1`, id,
 	)
-	return scanTask(row)
+	t, err := scanTaskRow(row.Scan)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errs.NotFound("task not found")
+		}
+		return nil, errs.Internal("failed to scan task")
+	}
+	return t, nil
 }
 
 // GetTasksByBoard returns all tasks for a board with optional column filtering.
 // Results are ordered by stage then position so the client gets Kanban-ready data.
 func (r *TaskRepo) GetTasksByBoard(ctx context.Context, boardID string, f TaskFilter) ([]model.Task, error) {
-	// Use SQL NULLs for omitted filters so one query handles all combinations.
 	var stageArg, priorityArg, assigneeArg *string
 	if f.Stage != "" {
 		stageArg = &f.Stage
@@ -102,9 +138,8 @@ func (r *TaskRepo) GetTasksByBoard(ctx context.Context, boardID string, f TaskFi
 	}
 
 	rows, err := r.db.Query(ctx,
-		`SELECT id, board_id, title, description, stage, priority,
-		        COALESCE(assignee_id,''), created_by, position, due_date, created_at, updated_at
-		 FROM   tasks
+		`SELECT `+taskCols+`
+		 FROM   public.tasks
 		 WHERE  board_id  = $1
 		   AND ($2::text IS NULL OR stage       = $2)
 		   AND ($3::text IS NULL OR priority    = $3)
@@ -119,16 +154,11 @@ func (r *TaskRepo) GetTasksByBoard(ctx context.Context, boardID string, f TaskFi
 
 	var tasks []model.Task
 	for rows.Next() {
-		var t model.Task
-		if err := rows.Scan(
-			&t.ID, &t.BoardID, &t.Title, &t.Description,
-			&t.Stage, &t.Priority, &t.AssigneeID,
-			&t.CreatedBy, &t.Position, &t.DueDate,
-			&t.CreatedAt, &t.UpdatedAt,
-		); err != nil {
+		t, err := scanTaskRow(rows.Scan)
+		if err != nil {
 			return nil, errs.Internal("failed to scan task row")
 		}
-		tasks = append(tasks, t)
+		tasks = append(tasks, *t)
 	}
 	if rows.Err() != nil {
 		return nil, errs.Internal("task query error")
@@ -136,11 +166,10 @@ func (r *TaskRepo) GetTasksByBoard(ctx context.Context, boardID string, f TaskFi
 	return tasks, nil
 }
 
-// UpdateTask persists changes to mutable task fields (title, description,
-// priority, assignee_id, due_date).
+// UpdateTask persists changes to mutable task fields.
 func (r *TaskRepo) UpdateTask(ctx context.Context, task *model.Task) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE tasks
+		`UPDATE public.tasks
 		 SET    title=$2, description=$3, priority=$4,
 		        assignee_id=NULLIF($5,''), due_date=$6, updated_at=$7
 		 WHERE  id=$1`,
@@ -160,13 +189,27 @@ func (r *TaskRepo) UpdateTask(ctx context.Context, task *model.Task) error {
 // given user that are due within the next 7 days, ordered by due_date ascending.
 func (r *TaskRepo) GetUpcomingTasksByUser(ctx context.Context, userID string, limit int) ([]model.Task, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, board_id, title, description, stage, priority,
-		        COALESCE(assignee_id,''), created_by, position, due_date, created_at, updated_at
-		 FROM   tasks
-		 WHERE  (assignee_id = $1 OR created_by = $1)
-		   AND  stage    != 'done'
-		   AND  due_date IS NOT NULL
-		   AND  due_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+		`SELECT `+taskCols+`
+		 FROM (
+		     SELECT id, board_id, title, description, stage, priority,
+		            assignee_id, created_by, position, due_date, start_date,
+		            tags, time_estimate, reference_link, flow_diagram_link,
+		            subtasks, attachments, created_at, updated_at
+		     FROM   public.tasks
+		     WHERE  assignee_id = $1
+		       AND  stage NOT IN ('Deployment')
+		       AND  due_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+		     UNION ALL
+		     SELECT id, board_id, title, description, stage, priority,
+		            assignee_id, created_by, position, due_date, start_date,
+		            tags, time_estimate, reference_link, flow_diagram_link,
+		            subtasks, attachments, created_at, updated_at
+		     FROM   public.tasks
+		     WHERE  created_by = $1
+		       AND  assignee_id IS NULL
+		       AND  stage NOT IN ('Deployment')
+		       AND  due_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+		 ) sub
 		 ORDER  BY due_date ASC
 		 LIMIT  $2`,
 		userID, limit,
@@ -178,16 +221,11 @@ func (r *TaskRepo) GetUpcomingTasksByUser(ctx context.Context, userID string, li
 
 	var tasks []model.Task
 	for rows.Next() {
-		var t model.Task
-		if err := rows.Scan(
-			&t.ID, &t.BoardID, &t.Title, &t.Description,
-			&t.Stage, &t.Priority, &t.AssigneeID,
-			&t.CreatedBy, &t.Position, &t.DueDate,
-			&t.CreatedAt, &t.UpdatedAt,
-		); err != nil {
+		t, err := scanTaskRow(rows.Scan)
+		if err != nil {
 			return nil, errs.Internal("failed to scan upcoming task row")
 		}
-		tasks = append(tasks, t)
+		tasks = append(tasks, *t)
 	}
 	if rows.Err() != nil {
 		return nil, errs.Internal("upcoming task query error")
@@ -196,23 +234,18 @@ func (r *TaskRepo) GetUpcomingTasksByUser(ctx context.Context, userID string, li
 }
 
 // UpdateTaskStage moves a task to a new stage at the specified position.
-// Runs inside a transaction to keep all position values contiguous:
-//
-//  1. Close the gap in the source stage by shifting later tasks up.
-//  2. Open a slot in the destination stage by shifting tasks from newPosition down.
-//  3. Place the task at the new stage and position.
+// Runs inside a transaction to keep all position values contiguous.
 func (r *TaskRepo) UpdateTaskStage(ctx context.Context, taskID, boardID, newStage string, newPosition int) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return errs.Internal("failed to begin transaction")
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck — rollback on all non-commit paths
+	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// ── 1. Fetch current state ────────────────────────────────────────────────
 	var currentStage string
 	var currentPos int
 	err = tx.QueryRow(ctx,
-		`SELECT stage, position FROM tasks WHERE id = $1 AND board_id = $2`,
+		`SELECT stage, position FROM public.tasks WHERE id = $1 AND board_id = $2`,
 		taskID, boardID,
 	).Scan(&currentStage, &currentPos)
 	if err != nil {
@@ -222,9 +255,8 @@ func (r *TaskRepo) UpdateTaskStage(ctx context.Context, taskID, boardID, newStag
 		return errs.Internal("failed to query task")
 	}
 
-	// ── 2. Close gap in old stage ─────────────────────────────────────────────
 	if _, err = tx.Exec(ctx,
-		`UPDATE tasks
+		`UPDATE public.tasks
 		 SET    position = position - 1
 		 WHERE  board_id = $1 AND stage = $2 AND position > $3 AND id != $4`,
 		boardID, currentStage, currentPos, taskID,
@@ -232,9 +264,8 @@ func (r *TaskRepo) UpdateTaskStage(ctx context.Context, taskID, boardID, newStag
 		return errs.Internal("failed to reorder source column")
 	}
 
-	// ── 3. Open slot in destination stage ─────────────────────────────────────
 	if _, err = tx.Exec(ctx,
-		`UPDATE tasks
+		`UPDATE public.tasks
 		 SET    position = position + 1
 		 WHERE  board_id = $1 AND stage = $2 AND position >= $3 AND id != $4`,
 		boardID, newStage, newPosition, taskID,
@@ -242,10 +273,9 @@ func (r *TaskRepo) UpdateTaskStage(ctx context.Context, taskID, boardID, newStag
 		return errs.Internal("failed to reorder destination column")
 	}
 
-	// ── 4. Place task ─────────────────────────────────────────────────────────
 	now := time.Now()
 	tag, err := tx.Exec(ctx,
-		`UPDATE tasks SET stage=$2, position=$3, updated_at=$4 WHERE id=$1`,
+		`UPDATE public.tasks SET stage=$2, position=$3, updated_at=$4 WHERE id=$1`,
 		taskID, newStage, newPosition, now,
 	)
 	if err != nil {

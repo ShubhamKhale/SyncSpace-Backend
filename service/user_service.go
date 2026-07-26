@@ -11,22 +11,22 @@ import (
 
 // UserService handles user profile business logic.
 type UserService struct {
-	repo *database.UserRepo
+	repo      *database.UserRepo
+	prefsRepo *database.UserPrefsRepo
 }
 
-// NewUserService creates a UserService backed by the given UserRepo.
-func NewUserService(repo *database.UserRepo) *UserService {
-	return &UserService{repo: repo}
+// NewUserService creates a UserService backed by the given repos.
+func NewUserService(repo *database.UserRepo, prefsRepo *database.UserPrefsRepo) *UserService {
+	return &UserService{repo: repo, prefsRepo: prefsRepo}
 }
 
-// GetProfile returns the full profile for the authenticated user.
-func (s *UserService) GetProfile(ctx context.Context, userID string) (*model.User, error) {
-	return s.repo.GetUserByID(ctx, userID)
+// GetProfile returns the full profile for the authenticated user, including org membership.
+func (s *UserService) GetProfile(ctx context.Context, userID string) (*model.AuthUser, error) {
+	return s.repo.GetUserWithOrg(ctx, userID)
 }
 
-// UpdateProfile applies partial updates to name, email, and bio.
-// Only non-nil pointer fields are applied; others keep their current value.
-func (s *UserService) UpdateProfile(ctx context.Context, userID string, name, email, bio *string) (*model.User, error) {
+// UpdateProfile applies partial updates to name, email.
+func (s *UserService) UpdateProfile(ctx context.Context, userID string, name, email *string) (*model.User, error) {
 	user, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -44,9 +44,6 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, name, em
 		}
 		user.Email = *email
 	}
-	if bio != nil {
-		user.Bio = *bio
-	}
 
 	user.UpdatedAt = time.Now()
 
@@ -57,7 +54,6 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, name, em
 }
 
 // UpdateAvatar stores a new avatar URL for the user.
-// The URL is accepted as-is (mock / pre-signed URL from the client).
 func (s *UserService) UpdateAvatar(ctx context.Context, userID, avatarURL string) (*model.User, error) {
 	if avatarURL == "" {
 		return nil, errs.BadRequest("avatar_url cannot be empty")
@@ -75,4 +71,23 @@ func (s *UserService) UpdateAvatar(ctx context.Context, userID, avatarURL string
 		return nil, err
 	}
 	return user, nil
+}
+
+// GetNotificationPrefs returns the current user's notification preferences.
+// Returns defaults if no preferences have been saved yet.
+func (s *UserService) GetNotificationPrefs(ctx context.Context, userID string) (*model.NotificationPrefs, error) {
+	prefs, err := s.prefsRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, errs.Internal("failed to fetch notification preferences")
+	}
+	return prefs, nil
+}
+
+// UpdateNotificationPrefs upserts notification preferences for the user.
+func (s *UserService) UpdateNotificationPrefs(ctx context.Context, userID string, prefs *model.NotificationPrefs) (*model.NotificationPrefs, error) {
+	result, err := s.prefsRepo.Upsert(ctx, userID, prefs)
+	if err != nil {
+		return nil, errs.Internal("failed to save notification preferences")
+	}
+	return result, nil
 }

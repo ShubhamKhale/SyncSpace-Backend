@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"d:\\\\\\\\Modern Web Projects\\\\\\\\syncspace\\\\\\\\SyncSpace-Backend\\\\\\\\\")"
+    ]
+  }
+}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"syncspace-backend/model"
@@ -35,7 +36,7 @@ func periodStart(period string) time.Time {
 	case "quarter":
 		days = 90
 	}
-	return time.Now().UTC().Truncate(24 * time.Hour).AddDate(0, 0, -days)
+	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -days)
 }
 
 // boardFilter converts an empty string into a nil pointer (= no filter).
@@ -53,18 +54,18 @@ func boardFilter(boardID string) *string {
 // quiet days) so the client can render a continuous chart without gap-filling.
 func (s *AnalyticsService) GetTaskCompletionTrend(
 	ctx context.Context,
-	userID, period, boardID string,
+	orgID, period, boardID string,
 ) ([]model.TaskTrendPoint, error) {
-	return s.repo.GetTaskCompletionTrend(ctx, userID, periodStart(period), boardFilter(boardID))
+	return s.repo.GetTaskCompletionTrend(ctx, orgID, periodStart(period), boardFilter(boardID))
 }
 
 // GetTaskDistribution returns current task counts bucketed by stage and by
 // priority. Results reflect the live state of the database, not a time window.
 func (s *AnalyticsService) GetTaskDistribution(
 	ctx context.Context,
-	userID, boardID string,
+	orgID, boardID string,
 ) (*model.TaskDistribution, error) {
-	return s.repo.GetTaskDistribution(ctx, userID, boardFilter(boardID))
+	return s.repo.GetTaskDistribution(ctx, orgID, boardFilter(boardID))
 }
 
 // GetBoardActivity returns daily task-creation and task-update counts for the
@@ -72,9 +73,9 @@ func (s *AnalyticsService) GetTaskDistribution(
 // updated_at differs from created_at).
 func (s *AnalyticsService) GetBoardActivity(
 	ctx context.Context,
-	userID, period, boardID string,
+	orgID, period, boardID string,
 ) ([]model.BoardActivityPoint, error) {
-	return s.repo.GetBoardActivity(ctx, userID, periodStart(period), boardFilter(boardID))
+	return s.repo.GetBoardActivity(ctx, orgID, periodStart(period), boardFilter(boardID))
 }
 
 // GetTeamContribution returns per-member task statistics: total created,
@@ -82,7 +83,54 @@ func (s *AnalyticsService) GetBoardActivity(
 // Results are ordered by tasks_created descending.
 func (s *AnalyticsService) GetTeamContribution(
 	ctx context.Context,
-	userID, boardID string,
+	orgID, boardID string,
 ) ([]model.TeamMemberContribution, error) {
-	return s.repo.GetTeamContribution(ctx, userID, boardFilter(boardID))
+	return s.repo.GetTeamContribution(ctx, orgID, boardFilter(boardID))
+}
+
+// ── New dashboard analytics methods ──────────────────────────────────────────
+
+func (s *AnalyticsService) GetMonthlyTaskTrend(ctx context.Context, orgID string) ([]model.MonthlyTrendPoint, error) {
+	return s.repo.GetMonthlyTaskTrend(ctx, orgID)
+}
+
+func (s *AnalyticsService) GetTaskDistributionByStage(ctx context.Context, orgID string) ([]model.DistributionItem, error) {
+	return s.repo.GetTaskDistributionByStage(ctx, orgID)
+}
+
+func (s *AnalyticsService) GetBoardActivityStats(ctx context.Context, orgID string) ([]model.BoardActivityItem, error) {
+	return s.repo.GetBoardActivityStats(ctx, orgID)
+}
+
+func (s *AnalyticsService) GetTeamContributionByPhase(ctx context.Context, orgID string) (*model.TeamContributionResult, error) {
+	return s.repo.GetTeamContributionByPhase(ctx, orgID)
+}
+
+func (s *AnalyticsService) GetDashboardAnalytics(ctx context.Context, orgID string) (*model.DashboardAnalytics, error) {
+	trend, err := s.repo.GetMonthlyTaskTrend(ctx, orgID)
+	if err != nil {
+		fmt.Println("get monthly task trend error:- ", err.Error())
+		return nil, err
+	}
+	dist, err := s.repo.GetTaskDistributionByStage(ctx, orgID)
+	if err != nil {
+		fmt.Println("get task distribution error:- ", err.Error())
+		return nil, err
+	}
+	activity, err := s.repo.GetBoardActivityStats(ctx, orgID)
+	if err != nil {
+		fmt.Println("get board activity error:- ", err.Error())
+		return nil, err
+	}
+	team, err := s.repo.GetTeamContributionByPhase(ctx, orgID)
+	if err != nil {
+		fmt.Println("get team contribution error:- ", err.Error())
+		return nil, err
+	}
+	return &model.DashboardAnalytics{
+		TaskCompletionTrend: trend,
+		TaskDistribution:    dist,
+		BoardActivity:       activity,
+		TeamContribution:    *team,
+	}, nil
 }

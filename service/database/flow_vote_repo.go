@@ -24,7 +24,7 @@ func NewFlowVoteRepo(db *pgxpool.Pool) *FlowVoteRepo {
 func (r *FlowVoteRepo) UpsertVote(ctx context.Context, flowID, userID, voteType string) (*model.FlowVote, error) {
 	v := &model.FlowVote{}
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO flow_votes (flow_id, user_id, vote_type, created_at, updated_at)
+		`INSERT INTO public.flow_votes (flow_id, user_id, vote_type, created_at, updated_at)
 		 VALUES ($1, $2, $3, NOW(), NOW())
 		 ON CONFLICT (flow_id, user_id) DO UPDATE
 		     SET vote_type = EXCLUDED.vote_type,
@@ -48,7 +48,7 @@ func (r *FlowVoteRepo) GetSummary(ctx context.Context, flowID, callerID string) 
 		     COUNT(*) FILTER (WHERE vote_type = 'up')::int,
 		     COUNT(*) FILTER (WHERE vote_type = 'down')::int,
 		     COALESCE(MAX(vote_type) FILTER (WHERE user_id = $2), '')
-		 FROM flow_votes
+		 FROM public.flow_votes
 		 WHERE flow_id = $1`,
 		flowID, callerID,
 	).Scan(&s.Up, &s.Down, &s.MyVote)

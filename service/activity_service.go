@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 
-	"syncspace-backend/errs"
 	"syncspace-backend/model"
 	"syncspace-backend/service/database"
 )
@@ -21,7 +20,8 @@ func NewActivityService(repo *database.ActivityRepo) *ActivityService {
 // ActivityQuery carries the caller-supplied filter and pagination parameters.
 // Zero values mean "no constraint" for filters, "use default" for pagination.
 type ActivityQuery struct {
-	BoardID string // filter to a specific board (and its tasks)
+	OrgID   string // scope to boards in this org
+	BoardID string // further filter to a specific board (and its tasks)
 	UserID  string // filter to a specific actor
 	Limit   int    // page size; clamped to [1, 100], default 20
 	Offset  int    // number of records to skip; default 0
@@ -40,14 +40,8 @@ func (s *ActivityService) GetLogs(ctx context.Context, q ActivityQuery) (*model.
 		q.Offset = 0
 	}
 
-	// At least one of board or user should be provided so we don't dump the
-	// entire activity_logs table. Callers that legitimately want all logs for
-	// the authenticated user should always pass UserID.
-	if q.BoardID == "" && q.UserID == "" {
-		return nil, errs.BadRequest("provide at least one of board_id or user_id")
-	}
-
 	f := database.ActivityFilter{
+		OrgID:   q.OrgID,
 		BoardID: q.BoardID,
 		UserID:  q.UserID,
 	}

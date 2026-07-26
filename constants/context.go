@@ -16,4 +16,10 @@ const (
 	// ContextKeySessionKey is the key used to pass the per-user AES-256
 	// session key through request context (set by encryption middleware).
 	ContextKeySessionKey contextKey = "session_key"
+
+	// ContextKeyOrgID is set by OrgContext middleware with the caller's active org ID.
+	ContextKeyOrgID contextKey = "org_id"
+
+	// ContextKeyOrgRole is set by OrgContext middleware with the caller's role in their org.
+	ContextKeyOrgRole contextKey = "org_role"
 )

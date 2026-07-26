@@ -48,20 +48,26 @@ func (rc *responseCapture) Status() int {
 }
 
 // Encryption returns a Gin middleware that:
-//  1. Looks up the session key for the requesting user (via X-User-ID header).
+//  1. Looks up the session key for the requesting user (via JWT context set by JWTAuth).
 //  2. Decrypts the incoming request body from {"data":"<base64>"} to plaintext JSON.
 //  3. After the controller writes its response, encrypts that response back to
 //     {"data":"<base64>"} before it reaches the client.
 //
-// When JWT auth middleware is added, replace the X-User-ID header lookup with
-// a context value set by the JWT middleware.
+// Must run after JWTAuth middleware so that ContextKeyUserID is already set.
 func Encryption(store *session.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID := c.GetHeader("X-User-ID")
-		if userID == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, data.Fail("missing X-User-ID header"))
+		// OPTIONS preflight is handled by CORS middleware — skip encryption entirely.
+		if c.Request.Method == http.MethodOptions {
+			c.Next()
 			return
 		}
+
+		val, exists := c.Get(string(constants.ContextKeyUserID))
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, data.Fail("authentication required"))
+			return
+		}
+		userID := val.(string)
 
 		key, ok := store.GetKey(userID)
 		if !ok {
@@ -69,28 +75,30 @@ func Encryption(store *session.Store) gin.HandlerFunc {
 			return
 		}
 
-		// ── Decrypt request body ──────────────────────────────────────────────
-		var req encryptedPayload
-		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, data.Fail("request must be {\"data\":\"<base64>\"}"))
-			return
-		}
-		if req.Data == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, data.Fail("encrypted data field is empty"))
-			return
-		}
+		// ── Decrypt request body (GET/HEAD carry no body — skip decryption) ──
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			var req encryptedPayload
+			if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+				c.AbortWithStatusJSON(http.StatusBadRequest, data.Fail("request must be {\"data\":\"<base64>\"}"))
+				return
+			}
+			if req.Data == "" {
+				c.AbortWithStatusJSON(http.StatusBadRequest, data.Fail("encrypted data field is empty"))
+				return
+			}
 
-		plaintext, err := crypto.Decrypt(key, req.Data)
-		if err != nil {
-			utils.Error(constants.LogTagCrypto, "request decryption failed", err)
-			c.AbortWithStatusJSON(http.StatusBadRequest, data.Fail("decryption failed"))
-			return
-		}
+			plaintext, err := crypto.Decrypt(key, req.Data)
+			if err != nil {
+				utils.Error(constants.LogTagCrypto, "request decryption failed", err)
+				c.AbortWithStatusJSON(http.StatusBadRequest, data.Fail("decryption failed"))
+				return
+			}
 
-		// Replace the request body with the decrypted plaintext so controllers
-		// can bind it normally via c.ShouldBindJSON / json.NewDecoder.
-		c.Request.Body = io.NopCloser(bytes.NewReader(plaintext))
-		c.Request.ContentLength = int64(len(plaintext))
+			// Replace the request body with the decrypted plaintext so controllers
+			// can bind it normally via c.ShouldBindJSON / json.NewDecoder.
+			c.Request.Body = io.NopCloser(bytes.NewReader(plaintext))
+			c.Request.ContentLength = int64(len(plaintext))
+		}
 
 		// ── Capture response ──────────────────────────────────────────────────
 		capture := &responseCapture{

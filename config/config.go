@@ -16,6 +16,17 @@ type Config struct {
 	DBURL     string
 	JWTSecret string
 	RedisURL  string // redis://:password@host:port/db — optional; disables WebSocket if empty
+
+	// Email (Brevo) — all optional; email sending is skipped when BrevoAPIKey is empty.
+	BrevoAPIKey    string
+	BrevoFromEmail string
+	BrevoFromName  string
+	FrontendURL    string // base URL used to construct invite links
+
+	// Cloudinary — all optional; avatar upload is disabled when CloudinaryCloudName is empty.
+	CloudinaryCloudName string
+	CloudinaryAPIKey    string
+	CloudinaryAPISecret string
 }
 
 // Load reads the .env file and returns a populated Config.
@@ -30,6 +41,15 @@ func Load() *Config {
 		DBURL:     getEnv("DB_URL", ""),
 		JWTSecret: getEnv("JWT_SECRET", ""),
 		RedisURL:  getEnv("REDIS_URL", ""),
+
+		BrevoAPIKey:    getEnv("BREVO_API_KEY", ""),
+		BrevoFromEmail: getEnv("BREVO_FROM_EMAIL", "noreply@syncspace.app"),
+		BrevoFromName:  getEnv("BREVO_FROM_NAME", "SyncSpace"),
+		FrontendURL:    getEnv("FRONTEND_URL", "http://localhost:3000"),
+
+		CloudinaryCloudName: getEnv("CLOUDINARY_CLOUD_NAME", ""),
+		CloudinaryAPIKey:    getEnv("CLOUDINARY_API_KEY", ""),
+		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
 	}
 
 	if cfg.DBURL == "" {
