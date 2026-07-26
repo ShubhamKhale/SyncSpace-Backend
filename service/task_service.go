@@ -10,17 +10,32 @@ import (
 	"syncspace-backend/service/database"
 )
 
-// valid* maps are used for input validation in the service layer.
 var validStages = map[string]bool{
-	"todo":        true,
-	"in_progress": true,
-	"done":        true,
+	"Planning":    true,
+	"Design":      true,
+	"Development": true,
+	"QA":          true,
+	"Deployment":  true,
 }
 
 var validPriorities = map[string]bool{
 	"low":    true,
 	"medium": true,
 	"high":   true,
+}
+
+// SubtaskInput is the create-time shape for a subtask (no ID yet).
+type SubtaskInput struct {
+	Text      string
+	Completed bool
+}
+
+// AttachmentInput is the create-time shape for an attachment (no ID/timestamp yet).
+type AttachmentInput struct {
+	Name string
+	URL  string
+	Type string
+	Size int64
 }
 
 // TaskService handles task business logic.
@@ -35,37 +50,109 @@ func NewTaskService(repo *database.TaskRepo, logger *ActivityLogger) *TaskServic
 }
 
 // CreateTask validates input and persists a new task on the given board.
-// Stage defaults to "todo", priority defaults to "medium" if omitted.
-func (s *TaskService) CreateTask(ctx context.Context, createdBy, boardID, title, description, stage, priority, assigneeID string, dueDate *time.Time) (*model.Task, error) {
+func (s *TaskService) CreateTask(
+	ctx context.Context,
+	createdBy, boardID, title, description, stage, priority, assigneeID string,
+	dueDate *time.Time,
+	startDate *time.Time,
+	tags []string,
+	timeEstimate, referenceLink, flowDiagramLink string,
+	subtasks []SubtaskInput,
+	attachments []AttachmentInput,
+) (*model.Task, error) {
 	if title == "" {
 		return nil, errs.BadRequest("title is required")
 	}
 	if stage == "" {
-		stage = "todo"
+		stage = "Planning"
 	}
 	if priority == "" {
 		priority = "medium"
 	}
 	if !validStages[stage] {
-		return nil, errs.BadRequest("stage must be one of: todo, in_progress, done")
+		return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
 	}
 	if !validPriorities[priority] {
 		return nil, errs.BadRequest("priority must be one of: low, medium, high")
 	}
 
+	// Tags validation
+	if len(tags) > 10 {
+		return nil, errs.BadRequest("tags: max 10 items allowed")
+	}
+	for _, t := range tags {
+		if len(t) > 50 {
+			return nil, errs.BadRequest("tags: each tag must be 50 characters or fewer")
+		}
+	}
+
+	// Subtasks validation
+	if len(subtasks) > 50 {
+		return nil, errs.BadRequest("subtasks: max 50 items allowed")
+	}
+
+	// Attachments validation
+	if len(attachments) > 10 {
+		return nil, errs.BadRequest("attachments: max 10 items allowed")
+	}
+	for _, a := range attachments {
+		if a.URL == "" {
+			return nil, errs.BadRequest("attachments: url is required for each attachment")
+		}
+		if a.Name == "" {
+			return nil, errs.BadRequest("attachments: name is required for each attachment")
+		}
+	}
+
+	// Normalize nil slices → empty (consistent JSON output)
+	if tags == nil {
+		tags = []string{}
+	}
+
 	now := time.Now()
+
+	// Build subtasks with generated IDs
+	modelSubtasks := make([]model.Subtask, len(subtasks))
+	for i, s := range subtasks {
+		modelSubtasks[i] = model.Subtask{
+			ID:        utils.NewUUID(),
+			Text:      s.Text,
+			Completed: s.Completed,
+		}
+	}
+
+	// Build attachments with generated IDs
+	modelAttachments := make([]model.Attachment, len(attachments))
+	for i, a := range attachments {
+		modelAttachments[i] = model.Attachment{
+			ID:         utils.NewUUID(),
+			Name:       a.Name,
+			URL:        a.URL,
+			Type:       a.Type,
+			Size:       a.Size,
+			UploadedAt: now,
+		}
+	}
+
 	task := &model.Task{
-		ID:          utils.NewUUID(),
-		BoardID:     boardID,
-		Title:       title,
-		Description: description,
-		Stage:       stage,
-		Priority:    priority,
-		AssigneeID:  assigneeID,
-		CreatedBy:   createdBy,
-		DueDate:     dueDate,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:              utils.NewUUID(),
+		BoardID:         boardID,
+		Title:           title,
+		Description:     description,
+		Stage:           stage,
+		Priority:        priority,
+		AssigneeID:      assigneeID,
+		CreatedBy:       createdBy,
+		DueDate:         dueDate,
+		StartDate:       startDate,
+		Tags:            tags,
+		TimeEstimate:    timeEstimate,
+		ReferenceLink:   referenceLink,
+		FlowDiagramLink: flowDiagramLink,
+		Subtasks:        modelSubtasks,
+		Attachments:     modelAttachments,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	if err := s.repo.InsertTask(ctx, task); err != nil {
@@ -82,10 +169,9 @@ func (s *TaskService) CreateTask(ctx context.Context, createdBy, boardID, title,
 }
 
 // GetTasks returns tasks for a board with optional filtering.
-// Any empty filter field is ignored (matches all values).
 func (s *TaskService) GetTasks(ctx context.Context, boardID string, filter database.TaskFilter) ([]model.Task, error) {
 	if filter.Stage != "" && !validStages[filter.Stage] {
-		return nil, errs.BadRequest("stage must be one of: todo, in_progress, done")
+		return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
 	}
 	if filter.Priority != "" && !validPriorities[filter.Priority] {
 		return nil, errs.BadRequest("priority must be one of: low, medium, high")
@@ -102,7 +188,6 @@ func (s *TaskService) GetTasks(ctx context.Context, boardID string, filter datab
 }
 
 // UpdateTask applies partial updates to mutable fields.
-// Nil pointer fields are left unchanged.
 func (s *TaskService) UpdateTask(
 	ctx context.Context,
 	taskID string,
@@ -146,25 +231,20 @@ func (s *TaskService) UpdateTask(
 		return nil, err
 	}
 
-	// Log using the actor stored on the task (created_by); UpdateTask has no
-	// callerID param, so we use created_by as a reasonable actor proxy.
 	s.logger.LogTask(ctx, task.CreatedBy, task.ID, ActionUpdated, changed)
 
 	return task, nil
 }
 
 // MoveTask moves a task to a new stage at the given 0-based position.
-// This is the drag-and-drop handler — position values in both the source
-// and destination columns are kept contiguous by the repo layer.
 func (s *TaskService) MoveTask(ctx context.Context, taskID, boardID, newStage string, newPosition int) (*model.Task, error) {
 	if !validStages[newStage] {
-		return nil, errs.BadRequest("stage must be one of: todo, in_progress, done")
+		return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
 	}
 	if newPosition < 0 {
 		return nil, errs.BadRequest("position must be >= 0")
 	}
 
-	// Read current stage before moving so we can include it in the log.
 	before, err := s.repo.GetTaskByID(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -180,8 +260,8 @@ func (s *TaskService) MoveTask(ctx context.Context, taskID, boardID, newStage st
 	}
 
 	s.logger.LogTask(ctx, before.CreatedBy, task.ID, ActionMoved, map[string]any{
-		"from": before.Stage,
-		"to":   newStage,
+		"from":     before.Stage,
+		"to":       newStage,
 		"position": newPosition,
 	})
 

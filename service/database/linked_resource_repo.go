@@ -23,7 +23,7 @@ func NewLinkedResourceRepo(db *pgxpool.Pool) *LinkedResourceRepo {
 func (r *LinkedResourceRepo) GetByBoard(ctx context.Context, boardID string) ([]model.LinkedResource, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, board_id, label, url, created_by, created_at, updated_at
-		 FROM   linked_resources
+		 FROM   public.linked_resources
 		 WHERE  board_id = $1
 		 ORDER  BY created_at ASC`,
 		boardID,
@@ -67,7 +67,7 @@ func (r *LinkedResourceRepo) ReplaceAll(ctx context.Context, boardID string, res
 
 	// ── 1. Remove the existing set ────────────────────────────────────────────
 	if _, err = tx.Exec(ctx,
-		`DELETE FROM linked_resources WHERE board_id = $1`,
+		`DELETE FROM public.linked_resources WHERE board_id = $1`,
 		boardID,
 	); err != nil {
 		return errs.Internal("failed to delete linked resources")
@@ -76,7 +76,7 @@ func (r *LinkedResourceRepo) ReplaceAll(ctx context.Context, boardID string, res
 	// ── 2. Insert the new set (no-op when slice is empty) ─────────────────────
 	for _, lr := range resources {
 		if _, err = tx.Exec(ctx,
-			`INSERT INTO linked_resources
+			`INSERT INTO public.linked_resources
 			     (id, board_id, label, url, created_by, created_at, updated_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			lr.ID, lr.BoardID, lr.Label, lr.URL,

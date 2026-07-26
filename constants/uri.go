@@ -16,6 +16,9 @@ const (
 	URIUserProfile = "/user/profile"
 	URIUserAvatar  = "/user/avatar"
 
+	// Settings routes
+	URISettingsNotifications = "/settings/notifications"
+
 	// Organization routes
 	URIOrganization          = "/organization"
 	URIOrganizationID        = "/organization/:id"
@@ -24,8 +27,21 @@ const (
 	URIOrgMemberRole         = "/organization/members/:id/role"
 	URIOrgMemberID           = "/organization/members/:id"
 
-	// Board sub-resource routes (share :id param with board tasks)
+	// Invite token routes
+	URIOrgInvite       = "/organization/invite"         // POST — create invite token
+	URIOrgInviteVerify = "/organization/invite/verify"  // GET  — public verify
+
+	// Board CRUD + sub-resource routes (:id param; register static /boards/recent first)
+	URIBoardByID            = "/boards/:id"
 	URIBoardLinkedResources = "/boards/:id/linked-resources"
+	URIBoardHealth          = "/boards/:id/health"
+	URIBoardActivity        = "/boards/:id/activity"
+	URIBoardMembers          = "/boards/:id/members"
+	URIBoardFlows          = "/boards/:id/flows"
+	URIBoardFlowByID       = "/boards/:id/flows/:flowId"
+	URIBoardFlowDuplicate  = "/boards/:id/flows/:flowId/duplicate"
+	URIBoardFlowDiagram    = "/boards/:id/flows/:flowId/diagram"
+	URIBoardFlowVotes      = "/boards/:id/flows/:flowId/votes"
 
 	// Task routes
 	URIBoardTasks   = "/boards/:id/tasks" // nested: list + create
@@ -45,14 +61,22 @@ const (
 	URINotificationRead     = "/notifications/:id/read"
 
 	// Analytics routes
-	URIAnalyticsTaskCompletion   = "/analytics/task-completion"
-	URIAnalyticsTaskDistribution = "/analytics/task-distribution"
-	URIAnalyticsBoardActivity    = "/analytics/board-activity"
-	URIAnalyticsTeamContribution = "/analytics/team-contribution"
+	URIAnalyticsTaskCompletion        = "/analytics/task-completion"
+	URIAnalyticsTaskCompletionTrend   = "/analytics/task-completion-trend"
+	URIAnalyticsTaskDistribution      = "/analytics/task-distribution"
+	URIAnalyticsBoardActivity         = "/analytics/board-activity"
+	URIAnalyticsTeamContribution      = "/analytics/team-contribution"
+	URIAnalyticsDashboard             = "/analytics/dashboard"
 
 	// Flow diagram routes
 	URIFlowByID  = "/flows/:id"
 	URIFlowVotes = "/flows/:id/votes"
+
+	// Flow presence (REST — complement to WebSocket flow.join/leave events)
+	// Static /join and /leave registered before any param routes.
+	URIFlowParticipantsJoin  = "/boards/:id/flows/:flowId/participants/join"
+	URIFlowParticipants      = "/boards/:id/flows/:flowId/participants"
+	URIFlowParticipantsLeave = "/boards/:id/flows/:flowId/participants/leave"
 
 	// WebSocket
 	URIWebSocket = "/ws"

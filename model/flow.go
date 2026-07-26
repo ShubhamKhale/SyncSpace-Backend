@@ -10,18 +10,18 @@ import (
 //
 // DB table (run before starting the server):
 //
-//	CREATE TABLE flows (
+//	CREATE TABLE public.flows (
 //	    id               TEXT        PRIMARY KEY,
-//	    board_id         TEXT        NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+//	    board_id         TEXT        NOT NULL REFERENCES public.boards(id) ON DELETE CASCADE,
 //	    title            TEXT        NOT NULL DEFAULT '',
 //	    data             JSONB       NOT NULL DEFAULT '{"nodes":[],"edges":[]}',
 //	    version          INTEGER     NOT NULL DEFAULT 0,
-//	    last_modified_by TEXT        NOT NULL REFERENCES users(id),
-//	    created_by       TEXT        NOT NULL REFERENCES users(id),
+//	    last_modified_by TEXT        NOT NULL REFERENCES public.users(id),
+//	    created_by       TEXT        NOT NULL REFERENCES public.users(id),
 //	    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 //	    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 //	);
-//	CREATE INDEX idx_flows_board ON flows(board_id);
+//	CREATE INDEX idx_flows_board ON public.flows(board_id);
 type Flow struct {
 	ID             string          `json:"id"`
 	BoardID        string          `json:"board_id"`

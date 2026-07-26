@@ -23,21 +23,20 @@ func NewDashboardService(
 	return &DashboardService{dashRepo: dashRepo, boardRepo: boardRepo, taskRepo: taskRepo}
 }
 
-// GetStats returns aggregated board and task counts for the user's dashboard.
-func (s *DashboardService) GetStats(ctx context.Context, userID string) (*model.DashboardStats, error) {
-	return s.dashRepo.GetStats(ctx, userID)
+// GetStats returns aggregated board and task counts for the org's dashboard.
+func (s *DashboardService) GetStats(ctx context.Context, orgID string) (*model.DashboardStats, error) {
+	return s.dashRepo.GetStats(ctx, orgID)
 }
 
-// GetRecentBoards returns the user's most recently updated boards.
-// limit is forwarded to the board service clamping logic (max 20).
-func (s *DashboardService) GetRecentBoards(ctx context.Context, userID string, limit int) ([]model.Board, error) {
+// GetRecentBoards returns the org's most recently updated boards.
+func (s *DashboardService) GetRecentBoards(ctx context.Context, orgID string, limit int) ([]model.Board, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 	if limit > 20 {
 		limit = 20
 	}
-	return s.boardRepo.GetRecentBoardsByOwner(ctx, userID, limit)
+	return s.boardRepo.GetRecentBoardsByOrg(ctx, orgID, limit)
 }
 
 // GetUpcomingTasks returns non-done tasks assigned to or created by the user

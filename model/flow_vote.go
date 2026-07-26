@@ -7,9 +7,9 @@ import "time"
 //
 // DB table (run before starting the server):
 //
-//	CREATE TABLE flow_votes (
-//	    flow_id    TEXT        NOT NULL REFERENCES flows(id)  ON DELETE CASCADE,
-//	    user_id    TEXT        NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+//	CREATE TABLE public.flow_votes (
+//	    flow_id    TEXT        NOT NULL REFERENCES public.flows(id)  ON DELETE CASCADE,
+//	    user_id    TEXT        NOT NULL REFERENCES public.users(id)  ON DELETE CASCADE,
 //	    vote_type  TEXT        NOT NULL CHECK (vote_type IN ('up','down')),
 //	    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 //	    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

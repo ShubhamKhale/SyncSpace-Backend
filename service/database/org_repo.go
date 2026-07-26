@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -30,12 +31,13 @@ func (r *OrgRepo) GetOrgsByUserID(ctx context.Context, userID string) ([]model.O
 	rows, err := r.db.Query(ctx,
 		`SELECT o.id, o.name, o.description, o.owner_id, o.created_at, o.updated_at,
 		        CASE WHEN o.owner_id = $1 THEN 'owner' ELSE om.role END AS role
-		 FROM   organizations o
-		 JOIN   organization_members om ON om.organization_id = o.id AND om.user_id = $1
+		 FROM   public.organizations o
+		 JOIN   public.organization_members om ON om.organization_id = o.id AND om.user_id = $1
 		 ORDER  BY o.created_at ASC`,
 		userID,
 	)
 	if err != nil {
+		fmt.Println("GetOrgsByUserID query error for user " + userID + ": " + err.Error())
 		return nil, errs.Internal("failed to query organizations")
 	}
 	defer rows.Close()
@@ -62,7 +64,7 @@ func (r *OrgRepo) GetOrgByID(ctx context.Context, id string) (*model.Organizatio
 	org := &model.Organization{}
 	err := r.db.QueryRow(ctx,
 		`SELECT id, name, description, owner_id, created_at, updated_at
-		 FROM   organizations WHERE id = $1`,
+		 FROM   public.organizations WHERE id = $1`,
 		id,
 	).Scan(&org.ID, &org.Name, &org.Description, &org.OwnerID, &org.CreatedAt, &org.UpdatedAt)
 	if err != nil {
@@ -77,7 +79,7 @@ func (r *OrgRepo) GetOrgByID(ctx context.Context, id string) (*model.Organizatio
 // UpdateOrg persists the name and description of an existing organization.
 func (r *OrgRepo) UpdateOrg(ctx context.Context, org *model.Organization) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE organizations
+		`UPDATE public.organizations
 		 SET    name=$2, description=$3, updated_at=$4
 		 WHERE  id=$1`,
 		org.ID, org.Name, org.Description, org.UpdatedAt,
@@ -98,7 +100,7 @@ func (r *OrgRepo) UpdateOrg(ctx context.Context, org *model.Organization) error 
 func (r *OrgRepo) GetMemberRole(ctx context.Context, orgID, userID string) (string, error) {
 	var ownerID string
 	err := r.db.QueryRow(ctx,
-		`SELECT owner_id FROM organizations WHERE id = $1`, orgID,
+		`SELECT owner_id FROM public.organizations WHERE id = $1`, orgID,
 	).Scan(&ownerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -112,7 +114,7 @@ func (r *OrgRepo) GetMemberRole(ctx context.Context, orgID, userID string) (stri
 
 	var role string
 	err = r.db.QueryRow(ctx,
-		`SELECT role FROM organization_members
+		`SELECT role FROM public.organization_members
 		 WHERE  organization_id = $1 AND user_id = $2`,
 		orgID, userID,
 	).Scan(&role)
@@ -131,8 +133,8 @@ func (r *OrgRepo) GetOrgMembers(ctx context.Context, orgID string) ([]model.OrgM
 	rows, err := r.db.Query(ctx,
 		`SELECT om.user_id, u.name, u.email, u.avatar_url,
 		        om.role, om.status, COALESCE(om.invited_by,''), om.joined_at
-		 FROM   organization_members om
-		 JOIN   users u ON u.id = om.user_id
+		 FROM   public.organization_members om
+		 JOIN   public.users u ON u.id = om.user_id
 		 WHERE  om.organization_id = $1
 		 ORDER  BY om.joined_at ASC`,
 		orgID,
@@ -164,7 +166,7 @@ func (r *OrgRepo) GetOrgMember(ctx context.Context, orgID, userID string) (*mode
 	m := &model.OrgMember{OrgID: orgID, UserID: userID}
 	err := r.db.QueryRow(ctx,
 		`SELECT role, status, COALESCE(invited_by,''), joined_at
-		 FROM   organization_members
+		 FROM   public.organization_members
 		 WHERE  organization_id = $1 AND user_id = $2`,
 		orgID, userID,
 	).Scan(&m.Role, &m.Status, &m.InvitedBy, &m.JoinedAt)
@@ -181,7 +183,7 @@ func (r *OrgRepo) GetOrgMember(ctx context.Context, orgID, userID string) (*mode
 // user is already a member of this organization.
 func (r *OrgRepo) InsertOrgMember(ctx context.Context, m *model.OrgMember) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO organization_members
+		`INSERT INTO public.organization_members
 		     (organization_id, user_id, role, status, invited_by, joined_at)
 		 VALUES ($1, $2, $3, $4, NULLIF($5,''), $6)`,
 		m.OrgID, m.UserID, m.Role, m.Status, m.InvitedBy, m.JoinedAt,
@@ -199,7 +201,7 @@ func (r *OrgRepo) InsertOrgMember(ctx context.Context, m *model.OrgMember) error
 // UpdateOrgMemberRole changes the role of an existing member.
 func (r *OrgRepo) UpdateOrgMemberRole(ctx context.Context, orgID, userID, role string) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE organization_members
+		`UPDATE public.organization_members
 		 SET    role = $3
 		 WHERE  organization_id = $1 AND user_id = $2`,
 		orgID, userID, role,
@@ -213,10 +215,44 @@ func (r *OrgRepo) UpdateOrgMemberRole(ctx context.Context, orgID, userID, role s
 	return nil
 }
 
+// GetUserPrimaryOrgID returns the org ID and role for the user's active membership.
+// Returns found=false (not an error) when the user has no active org membership.
+func (r *OrgRepo) GetUserPrimaryOrgID(ctx context.Context, userID string) (orgID, role string, found bool, err error) {
+	err = r.db.QueryRow(ctx,
+		`SELECT om.organization_id,
+		        CASE WHEN o.owner_id = $1 THEN 'owner' ELSE om.role END AS role
+		 FROM   public.organization_members om
+		 JOIN   public.organizations o ON o.id = om.organization_id
+		 WHERE  om.user_id = $1 AND om.status = 'active'
+		 LIMIT  1`,
+		userID,
+	).Scan(&orgID, &role)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", false, nil
+		}
+		return "", "", false, errs.Internal("failed to query org membership")
+	}
+	return orgID, role, true, nil
+}
+
+// InsertOrganization persists a new organization record.
+func (r *OrgRepo) InsertOrganization(ctx context.Context, org *model.Organization) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO public.organizations (id, name, description, owner_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		org.ID, org.Name, org.Description, org.OwnerID, org.CreatedAt, org.UpdatedAt,
+	)
+	if err != nil {
+		return errs.Internal("failed to create organization")
+	}
+	return nil
+}
+
 // DeleteOrgMember removes a membership record from the organization.
 func (r *OrgRepo) DeleteOrgMember(ctx context.Context, orgID, userID string) error {
 	tag, err := r.db.Exec(ctx,
-		`DELETE FROM organization_members
+		`DELETE FROM public.organization_members
 		 WHERE  organization_id = $1 AND user_id = $2`,
 		orgID, userID,
 	)

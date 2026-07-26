@@ -25,23 +25,42 @@ func NewTaskController(svc *service.TaskService) *TaskController {
 
 // ── Request types ─────────────────────────────────────────────────────────────
 
+type subtaskInput struct {
+	Text      string `json:"text"`
+	Completed bool   `json:"completed"`
+}
+
+type attachmentInput struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	Type string `json:"type"`
+	Size int64  `json:"size"`
+}
+
 type createTaskRequest struct {
-	Title       string  `json:"title"       binding:"required"`
-	Description string  `json:"description"`
-	Stage       string  `json:"stage"`    // default: todo
-	Priority    string  `json:"priority"` // default: medium
-	AssigneeID  string  `json:"assignee_id"`
-	DueDate     *string `json:"due_date"` // RFC3339 string, optional
+	Title           string            `json:"title"             binding:"required"`
+	Description     string            `json:"description"`
+	Stage           string            `json:"stage"`
+	Priority        string            `json:"priority"`
+	AssigneeID      string            `json:"assignee_id"`
+	DueDate         *string           `json:"due_date"`
+	StartDate       *string           `json:"start_date"`
+	Tags            []string          `json:"tags"`
+	TimeEstimate    string            `json:"time_estimate"`
+	ReferenceLink   string            `json:"reference_link"`
+	FlowDiagramLink string            `json:"flow_diagram_link"`
+	Subtasks        []subtaskInput    `json:"subtasks"`
+	Attachments     []attachmentInput `json:"attachments"`
 }
 
 // updateTaskRequest uses pointer fields so PATCH only touches supplied fields.
 type updateTaskRequest struct {
-	Title       *string  `json:"title"`
-	Description *string  `json:"description"`
-	Priority    *string  `json:"priority"`
-	AssigneeID  *string  `json:"assignee_id"`
-	DueDate     *string  `json:"due_date"` // send null to clear, omit to keep
-	ClearDueDate bool    `json:"clear_due_date"` // explicit clear flag
+	Title        *string `json:"title"`
+	Description  *string `json:"description"`
+	Priority     *string `json:"priority"`
+	AssigneeID   *string `json:"assignee_id"`
+	DueDate      *string `json:"due_date"`
+	ClearDueDate bool    `json:"clear_due_date"`
 }
 
 type moveTaskRequest struct {
@@ -52,12 +71,6 @@ type moveTaskRequest struct {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 // GetTasks handles GET /api/boards/:id/tasks.
-//
-// Optional query filters:
-//
-//	?stage=todo|in_progress|done
-//	?priority=low|medium|high
-//	?assignee_id=<user-id>
 func (tc *TaskController) GetTasks(c *gin.Context) {
 	boardID := c.Param("id")
 
@@ -80,7 +93,7 @@ func (tc *TaskController) GetTasks(c *gin.Context) {
 // CreateTask handles POST /api/boards/:id/tasks.
 func (tc *TaskController) CreateTask(c *gin.Context) {
 	callerID := mustUserID(c)
-	boardID   := c.Param("id")
+	boardID := c.Param("id")
 
 	var req createTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -98,12 +111,41 @@ func (tc *TaskController) CreateTask(c *gin.Context) {
 		dueDate = &parsed
 	}
 
+	var startDate *time.Time
+	if req.StartDate != nil {
+		parsed, err := time.Parse(time.RFC3339, *req.StartDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, data.Fail("start_date must be RFC3339 format (e.g. 2026-01-15T09:00:00Z)"))
+			return
+		}
+		startDate = &parsed
+	}
+
+	// Convert local input types to service input types
+	svcSubtasks := make([]service.SubtaskInput, len(req.Subtasks))
+	for i, s := range req.Subtasks {
+		svcSubtasks[i] = service.SubtaskInput{Text: s.Text, Completed: s.Completed}
+	}
+
+	svcAttachments := make([]service.AttachmentInput, len(req.Attachments))
+	for i, a := range req.Attachments {
+		svcAttachments[i] = service.AttachmentInput{
+			Name: a.Name,
+			URL:  a.URL,
+			Type: a.Type,
+			Size: a.Size,
+		}
+	}
+
 	task, err := tc.svc.CreateTask(
 		c.Request.Context(),
 		callerID, boardID,
 		req.Title, req.Description,
 		req.Stage, req.Priority, req.AssigneeID,
-		dueDate,
+		dueDate, startDate,
+		req.Tags,
+		req.TimeEstimate, req.ReferenceLink, req.FlowDiagramLink,
+		svcSubtasks, svcAttachments,
 	)
 	if err != nil {
 		utils.Error(constants.LogTagTask, "CreateTask failed board="+boardID, err)
@@ -116,7 +158,6 @@ func (tc *TaskController) CreateTask(c *gin.Context) {
 }
 
 // UpdateTask handles PATCH /api/tasks/:id.
-// Only the fields present in the JSON body are updated.
 func (tc *TaskController) UpdateTask(c *gin.Context) {
 	taskID := c.Param("id")
 
@@ -126,10 +167,9 @@ func (tc *TaskController) UpdateTask(c *gin.Context) {
 		return
 	}
 
-	// Parse optional due_date — supports clearing via clear_due_date flag.
 	var dueDatePtr **time.Time
 	if req.ClearDueDate {
-		var nilTime *time.Time // typed nil pointer signals "clear the value"
+		var nilTime *time.Time
 		dueDatePtr = &nilTime
 	} else if req.DueDate != nil {
 		parsed, err := time.Parse(time.RFC3339, *req.DueDate)
@@ -137,7 +177,7 @@ func (tc *TaskController) UpdateTask(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, data.Fail("due_date must be RFC3339 format"))
 			return
 		}
-		p := &parsed // *time.Time — one more address-of gives **time.Time
+		p := &parsed
 		dueDatePtr = &p
 	}
 
@@ -158,14 +198,8 @@ func (tc *TaskController) UpdateTask(c *gin.Context) {
 }
 
 // MoveTask handles PATCH /api/tasks/:id/stage.
-// Moves a task to a new stage column at the specified position (drag-and-drop).
-// The board_id must be passed as a query parameter so the repo can correctly
-// reorder sibling tasks within the same board.
-//
-//	PATCH /api/tasks/abc-123/stage?board_id=brd-456
-//	{ "stage": "in_progress", "position": 2 }
 func (tc *TaskController) MoveTask(c *gin.Context) {
-	taskID  := c.Param("id")
+	taskID := c.Param("id")
 	boardID := c.Query("board_id")
 	if boardID == "" {
 		c.JSON(http.StatusBadRequest, data.Fail("board_id query parameter is required"))

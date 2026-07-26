@@ -1,7 +1,4 @@
 // Package service contains the application's business-logic layer.
-// Services coordinate between the operation (validation/transformation) layer
-// and the database (persistence) layer. They must never be called directly
-// from the router — only through controllers.
 package service
 
 import (
@@ -27,8 +24,7 @@ func NewBoardService(repo *database.BoardRepo, logger *ActivityLogger) *BoardSer
 }
 
 // CreateBoard validates the input, builds a Board model, and persists it.
-// ownerID must be the authenticated user's ID (set by JWT middleware).
-func (s *BoardService) CreateBoard(ctx context.Context, ownerID, title, description string) (*model.Board, error) {
+func (s *BoardService) CreateBoard(ctx context.Context, ownerID, orgID, title, description string) (*model.Board, error) {
 	if err := operation.ValidateCreateBoard(title, description); err != nil {
 		return nil, err
 	}
@@ -39,6 +35,7 @@ func (s *BoardService) CreateBoard(ctx context.Context, ownerID, title, descript
 		Title:       title,
 		Description: description,
 		OwnerID:     ownerID,
+		OrgID:       orgID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -53,22 +50,88 @@ func (s *BoardService) CreateBoard(ctx context.Context, ownerID, title, descript
 	return board, nil
 }
 
-// GetBoardsByOwner retrieves all boards owned by the given user.
-func (s *BoardService) GetBoardsByOwner(ctx context.Context, ownerID string) ([]model.Board, error) {
-	if ownerID == "" {
-		return nil, errs.BadRequest("owner ID is required")
+// GetBoardsByOrg retrieves all boards for the given org.
+func (s *BoardService) GetBoardsByOrg(ctx context.Context, orgID string) ([]model.Board, error) {
+	if orgID == "" {
+		return nil, errs.BadRequest("org ID is required")
 	}
-	return s.repo.GetBoardsByOwner(ctx, ownerID)
+	return s.repo.GetBoardsByOrg(ctx, orgID)
 }
 
-// GetRecentBoards returns up to limit boards for the user, sorted by last update.
-// limit is clamped to [1, 20].
-func (s *BoardService) GetRecentBoards(ctx context.Context, ownerID string, limit int) ([]model.Board, error) {
+// GetRecentBoards returns up to limit boards for the org, sorted by last update.
+func (s *BoardService) GetRecentBoards(ctx context.Context, orgID string, limit int) ([]model.Board, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 	if limit > 20 {
 		limit = 20
 	}
-	return s.repo.GetRecentBoardsByOwner(ctx, ownerID, limit)
+	return s.repo.GetRecentBoardsByOrg(ctx, orgID, limit)
+}
+
+// GetBoard returns a single board by ID, scoped to the caller's org.
+func (s *BoardService) GetBoard(ctx context.Context, boardID, orgID string) (*model.Board, error) {
+	return s.repo.GetBoardByIDAndOrg(ctx, boardID, orgID)
+}
+
+// UpdateBoard applies a partial update (title and/or description) to a board.
+// The board must belong to the given org. At least one field must be non-nil.
+func (s *BoardService) UpdateBoard(ctx context.Context, boardID, orgID string, title, description *string) (*model.Board, error) {
+	if title != nil && *title == "" {
+		return nil, errs.BadRequest("title cannot be empty")
+	}
+	return s.repo.UpdateBoard(ctx, boardID, orgID, title, description)
+}
+
+// GetBoardHealth verifies the board belongs to the caller's org and computes a
+// risk-based health summary from its tasks.
+func (s *BoardService) GetBoardHealth(ctx context.Context, boardID, orgID string) (*model.BoardHealth, error) {
+	if _, err := s.repo.GetBoardByIDAndOrg(ctx, boardID, orgID); err != nil {
+		return nil, err
+	}
+
+	overdue, atRisk, err := s.repo.GetTaskRiskCounts(ctx, boardID)
+	if err != nil {
+		return nil, err
+	}
+
+	const bottlenecks = 0 // requires stage-change timestamps we don't track yet
+
+	status := "healthy"
+	switch {
+	case overdue > 5:
+		status = "critical"
+	case overdue+bottlenecks+atRisk > 0:
+		status = "warning"
+	}
+
+	return &model.BoardHealth{
+		Status:       status,
+		OverdueTasks: overdue,
+		Bottlenecks:  bottlenecks,
+		AtRisk:       atRisk,
+	}, nil
+}
+
+// GetBoardMembers returns all active members of the board's org with mapped roles.
+// Verifies org scoping: returns errs.NotFound if board is not in the caller's org.
+func (s *BoardService) GetBoardMembers(ctx context.Context, boardID, orgID string) ([]model.BoardMember, error) {
+	return s.repo.GetBoardMembers(ctx, boardID, orgID)
+}
+
+// GetBoardActivity verifies the board belongs to the caller's org and returns
+// its most recent activity entries (board events + events on its tasks).
+func (s *BoardService) GetBoardActivity(ctx context.Context, boardID, orgID string, limit int) ([]model.BoardActivityEntry, error) {
+	if _, err := s.repo.GetBoardByIDAndOrg(ctx, boardID, orgID); err != nil {
+		return nil, err
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	return s.repo.GetRecentActivityByBoard(ctx, boardID, limit)
 }

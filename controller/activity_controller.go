@@ -39,17 +39,14 @@ func NewActivityController(svc *service.ActivityService) *ActivityController {
 //
 // Each log entry includes actor_name (resolved by JOIN, no extra round-trip).
 func (ac *ActivityController) GetActivityLogs(c *gin.Context) {
-	callerID := mustUserID(c)
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
 
 	boardID := c.Query("board_id")
 	userID  := c.Query("user_id")
 
-	// Default: show the authenticated user's own activity when no filter given.
-	if boardID == "" && userID == "" {
-		userID = callerID
-	}
-
 	q := service.ActivityQuery{
+		OrgID:   orgIDStr,
 		BoardID: boardID,
 		UserID:  userID,
 		Limit:   parseQueryInt(c, "limit", 20),

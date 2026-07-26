@@ -42,7 +42,7 @@ func (r *NotificationRepo) GetByUser(
 		     created_at,
 		     COUNT(*) FILTER (WHERE NOT is_read) OVER () AS unread_count,
 		     COUNT(*)                            OVER () AS total_count
-		 FROM   notifications
+		 FROM   public.notifications
 		 WHERE  user_id = $1
 		 ORDER  BY created_at DESC
 		 LIMIT  $2
@@ -80,7 +80,7 @@ func (r *NotificationRepo) GetByUser(
 // Returns errs.NotFound when no matching row exists (wrong id or wrong user).
 func (r *NotificationRepo) MarkRead(ctx context.Context, notifID, userID string) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE notifications
+		`UPDATE public.notifications
 		 SET    is_read = TRUE
 		 WHERE  id = $1 AND user_id = $2`,
 		notifID, userID,
@@ -98,7 +98,7 @@ func (r *NotificationRepo) MarkRead(ctx context.Context, notifID, userID string)
 // statement. Returns the number of rows updated.
 func (r *NotificationRepo) MarkAllRead(ctx context.Context, userID string) (int64, error) {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE notifications
+		`UPDATE public.notifications
 		 SET    is_read = TRUE
 		 WHERE  user_id = $1 AND is_read = FALSE`,
 		userID,
@@ -113,7 +113,7 @@ func (r *NotificationRepo) MarkAllRead(ctx context.Context, userID string) (int6
 // Intended to be called by other services (e.g. OrgService after an invite).
 func (r *NotificationRepo) InsertNotification(ctx context.Context, n *model.Notification) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO notifications
+		`INSERT INTO public.notifications
 		     (id, user_id, title, body, is_read, entity_type, entity_id, created_at)
 		 VALUES ($1, $2, $3, $4, FALSE, $5, $6, $7)`,
 		n.ID, n.UserID, n.Title, n.Body, n.EntityType, n.EntityID, n.CreatedAt,
@@ -131,7 +131,7 @@ func (r *NotificationRepo) GetUnreadCount(ctx context.Context, userID string) (i
 	var count int
 	err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*)::int
-		 FROM   notifications
+		 FROM   public.notifications
 		 WHERE  user_id = $1 AND is_read = FALSE`,
 		userID,
 	).Scan(&count)

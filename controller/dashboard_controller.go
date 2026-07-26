@@ -23,13 +23,17 @@ func NewDashboardController(svc *service.DashboardService) *DashboardController 
 }
 
 // GetStats handles GET /api/dashboard/stats.
-// Returns aggregated board and task counts for the authenticated user.
 func (dc *DashboardController) GetStats(c *gin.Context) {
-	userID := mustUserID(c)
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
+	if orgIDStr == "" {
+		c.JSON(http.StatusOK, data.OK(map[string]int{"board_count": 0, "task_todo": 0, "task_in_progress": 0, "task_done": 0, "task_due_soon": 0, "team_members": 0}))
+		return
+	}
 
-	stats, err := dc.svc.GetStats(c.Request.Context(), userID)
+	stats, err := dc.svc.GetStats(c.Request.Context(), orgIDStr)
 	if err != nil {
-		utils.Error(constants.LogTagDashboard, "GetStats failed for "+userID, err)
+		utils.Error(constants.LogTagDashboard, "GetStats failed org="+orgIDStr, err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
@@ -38,14 +42,19 @@ func (dc *DashboardController) GetStats(c *gin.Context) {
 }
 
 // GetRecentBoards handles GET /api/boards/recent.
-// Optional query param: ?limit=N (default 5, max 20).
 func (dc *DashboardController) GetRecentBoards(c *gin.Context) {
-	userID := mustUserID(c)
+	orgID, _ := c.Get(string(constants.ContextKeyOrgID))
+	orgIDStr, _ := orgID.(string)
 	limit := parseLimit(c, 5)
 
-	boards, err := dc.svc.GetRecentBoards(c.Request.Context(), userID, limit)
+	if orgIDStr == "" {
+		c.JSON(http.StatusOK, data.OK([]interface{}{}))
+		return
+	}
+
+	boards, err := dc.svc.GetRecentBoards(c.Request.Context(), orgIDStr, limit)
 	if err != nil {
-		utils.Error(constants.LogTagDashboard, "GetRecentBoards failed for "+userID, err)
+		utils.Error(constants.LogTagDashboard, "GetRecentBoards failed org="+orgIDStr, err)
 		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
 		return
 	}
