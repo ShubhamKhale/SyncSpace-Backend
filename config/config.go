@@ -13,6 +13,7 @@ import (
 // Config holds all runtime configuration for the application.
 type Config struct {
 	Port      string
+	GinMode   string // gin.ReleaseMode / gin.DebugMode; defaults to debug
 	DBURL     string
 	JWTSecret string
 	RedisURL  string // redis://:password@host:port/db — optional; disables WebSocket if empty
@@ -38,6 +39,7 @@ func Load() *Config {
 
 	cfg := &Config{
 		Port:      getEnv("PORT", "8080"),
+		GinMode:   getEnv("GIN_MODE", "debug"),
 		DBURL:     getEnv("DB_URL", ""),
 		JWTSecret: getEnv("JWT_SECRET", ""),
 		RedisURL:  getEnv("REDIS_URL", ""),
