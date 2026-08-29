@@ -1,0 +1,21 @@
+# Env
+.env
+.env.local
+
+# Build output
+syncspace
+syncspace.exe
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.neon

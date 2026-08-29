@@ -137,9 +137,10 @@ func main() {
 	wsCtrl              := controller.NewWsController(hub, cfg.JWTSecret)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
+	gin.SetMode(cfg.GinMode)
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000"},
+		AllowOrigins:     []string{cfg.FrontendURL},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "Cache-Control", "X-Requested-With", "X-User-ID"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
