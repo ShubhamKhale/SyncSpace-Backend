@@ -18,4 +18,5 @@ const (
 	LogTagNotification  = "[NOTIFICATION]"
 	LogTagLinkedResource = "[LINKED_RESOURCE]"
 	LogTagFlow           = "[FLOW]"
+	LogTagAI             = "[AI]"
 )

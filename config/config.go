@@ -28,6 +28,15 @@ type Config struct {
 	CloudinaryCloudName string
 	CloudinaryAPIKey    string
 	CloudinaryAPISecret string
+
+	// Ollama — local model server for AI chat/summarization in dev; no external API key.
+	OllamaURL   string
+	OllamaModel string
+
+	// Groq — cloud LLM used in prod (deployed backends can't reach a local Ollama).
+	// When GroqAPIKey is set, it takes priority over Ollama.
+	GroqAPIKey string
+	GroqModel  string
 }
 
 // Load reads the .env file and returns a populated Config.
@@ -52,6 +61,12 @@ func Load() *Config {
 		CloudinaryCloudName: getEnv("CLOUDINARY_CLOUD_NAME", ""),
 		CloudinaryAPIKey:    getEnv("CLOUDINARY_API_KEY", ""),
 		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
+
+		OllamaURL:   getEnv("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel: getEnv("OLLAMA_MODEL", "llama3.2:3b"),
+
+		GroqAPIKey: getEnv("GROQ_API_KEY", ""),
+		GroqModel:  getEnv("GROQ_MODEL", "openai/gpt-oss-20b"),
 	}
 
 	if cfg.DBURL == "" {
