@@ -11,9 +11,12 @@ import (
 	"syncspace-backend/config"
 	"syncspace-backend/constants"
 	"syncspace-backend/controller"
+	"syncspace-backend/pkg/aiclient"
 	"syncspace-backend/pkg/db"
 	pkgcloudinary "syncspace-backend/pkg/cloudinary"
 	pkgemail "syncspace-backend/pkg/email"
+	"syncspace-backend/pkg/groq"
+	"syncspace-backend/pkg/ollama"
 	pkgredis "syncspace-backend/pkg/redis"
 	"syncspace-backend/pkg/utils"
 	pkgws "syncspace-backend/pkg/ws"
@@ -117,6 +120,17 @@ func main() {
 		presenceSvc = service.NewPresenceService(pkgredis.Client, userRepo)
 	}
 
+	// AI — Groq in prod (GROQ_API_KEY set), local Ollama in dev otherwise.
+	var llmClient aiclient.ChatClient
+	if cfg.GroqAPIKey != "" {
+		llmClient = groq.NewClient(cfg.GroqAPIKey, cfg.GroqModel)
+		utils.Info("[AI]", "using Groq model="+cfg.GroqModel)
+	} else {
+		llmClient = ollama.NewClient(cfg.OllamaURL, cfg.OllamaModel)
+		utils.Info("[AI]", "GROQ_API_KEY not set — using local Ollama model="+cfg.OllamaModel)
+	}
+	aiSvc := service.NewAIService(llmClient, boardRepo, taskRepo, linkedResourceRepo)
+
 	// Controllers
 	healthCtrl          := controller.NewHealthController()
 	authCtrl            := controller.NewAuthController(authSvc)
@@ -135,6 +149,7 @@ func main() {
 	boardFlowVoteCtrl   := controller.NewBoardFlowVoteController(boardFlowVoteSvc)
 	presenceCtrl        := controller.NewPresenceController(presenceSvc)
 	wsCtrl              := controller.NewWsController(hub, cfg.JWTSecret)
+	aiCtrl              := controller.NewAIController(aiSvc)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
 	gin.SetMode(cfg.GinMode)
@@ -152,7 +167,7 @@ func main() {
 		healthCtrl, boardCtrl, authCtrl, userCtrl, orgCtrl,
 		taskCtrl, dashboardCtrl, activityCtrl, analyticsCtrl,
 		notificationCtrl, linkedResourceCtrl, flowCtrl, flowVoteCtrl,
-		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, store,
+		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, store,
 	)
 
 	// ── 5. Start server ───────────────────────────────────────────────────────

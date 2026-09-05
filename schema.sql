@@ -24,12 +24,12 @@ CREATE TABLE public.organizations (
 );
 
 -- ── 3. organization_members ───────────────────────────────────────────────────
--- Valid roles:    admin | member | viewer   (owner is tracked via organizations.owner_id)
+-- Valid roles:    owner | admin | member | viewer
 -- Valid statuses: active | invited
 CREATE TABLE public.organization_members (
     organization_id TEXT        NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
     user_id         TEXT        NOT NULL REFERENCES public.users(id)         ON DELETE CASCADE,
-    role            TEXT        NOT NULL CHECK (role IN ('admin', 'member', 'viewer')),
+    role            TEXT        NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
     status          TEXT        NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited')),
     invited_by      TEXT        REFERENCES public.users(id),
     joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -69,18 +69,25 @@ CREATE INDEX idx_boards_org_id ON public.boards(org_id);
 -- Valid stages:     todo | in_progress | done
 -- Valid priorities: low | medium | high
 CREATE TABLE public.tasks (
-    id          TEXT        PRIMARY KEY,
-    board_id    TEXT        NOT NULL REFERENCES public.boards(id) ON DELETE CASCADE,
-    title       TEXT        NOT NULL,
-    description TEXT        NOT NULL DEFAULT '',
-    stage       TEXT        NOT NULL DEFAULT 'Planning',
-    priority    TEXT        NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
-    assignee_id TEXT        REFERENCES public.users(id),
-    created_by  TEXT        NOT NULL REFERENCES public.users(id),
-    position    INTEGER     NOT NULL DEFAULT 0,
-    due_date    TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                TEXT        PRIMARY KEY,
+    board_id          TEXT        NOT NULL REFERENCES public.boards(id) ON DELETE CASCADE,
+    title             TEXT        NOT NULL,
+    description       TEXT        NOT NULL DEFAULT '',
+    stage             TEXT        NOT NULL DEFAULT 'Planning',
+    priority          TEXT        NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
+    assignee_id       TEXT        REFERENCES public.users(id),
+    created_by        TEXT        NOT NULL REFERENCES public.users(id),
+    position          INTEGER     NOT NULL DEFAULT 0,
+    due_date          TIMESTAMPTZ,
+    start_date        TIMESTAMPTZ,
+    tags              JSONB       NOT NULL DEFAULT '[]',
+    time_estimate     TEXT        NOT NULL DEFAULT '',
+    reference_link    TEXT        NOT NULL DEFAULT '',
+    flow_diagram_link TEXT        NOT NULL DEFAULT '',
+    subtasks          JSONB       NOT NULL DEFAULT '[]',
+    attachments       JSONB       NOT NULL DEFAULT '[]',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_tasks_board     ON public.tasks(board_id);

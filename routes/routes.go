@@ -34,6 +34,7 @@ func SetupRoutes(
 	bfvc *controller.BoardFlowVoteController,
 	prc  *controller.PresenceController,
 	wsc *controller.WsController,
+	aic *controller.AIController,
 	store *session.Store,
 ) {
 	r.GET(constants.URIHealth, hc.GetHealth)
@@ -145,6 +146,10 @@ func SetupRoutes(
 			jwtOnly.GET(constants.URIBoardFlowVotes, bfvc.GetVotes)
 			jwtOnly.POST(constants.URIBoardFlowVotes, bfvc.CastVote)
 			jwtOnly.DELETE(constants.URIBoardFlowVotes, bfvc.RemoveVote)
+
+			// AI — local model chat + summarization
+			jwtOnly.POST(constants.URIBoardAIChat, aic.ChatWithBoard)
+			jwtOnly.POST(constants.URIAISummarize, aic.Summarize)
 		}
 
 		// ── Protected routes: JWT + OrgContext + AES encryption ──────────────

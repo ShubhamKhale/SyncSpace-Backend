@@ -78,6 +78,10 @@ const (
 	URIFlowParticipants      = "/boards/:id/flows/:flowId/participants"
 	URIFlowParticipantsLeave = "/boards/:id/flows/:flowId/participants/leave"
 
+	// AI (local model chat + summarization)
+	URIBoardAIChat = "/boards/:id/ai/chat"
+	URIAISummarize = "/ai/summarize"
+
 	// WebSocket
 	URIWebSocket = "/ws"
 
