@@ -82,6 +82,9 @@ const (
 	URIBoardAIChat = "/boards/:id/ai/chat"
 	URIAISummarize = "/ai/summarize"
 
+	// AI diagram generation (Groq compound model, web-search-backed)
+	URIAIGenerateDiagram = "/ai/generate-diagram"
+
 	// WebSocket
 	URIWebSocket = "/ws"
 

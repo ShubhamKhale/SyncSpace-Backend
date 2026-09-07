@@ -122,14 +122,23 @@ func main() {
 
 	// AI — Groq in prod (GROQ_API_KEY set), local Ollama in dev otherwise.
 	var llmClient aiclient.ChatClient
+	var groqClient *groq.Client // kept for diagram generation, which is Groq-only (needs groq/compound's web search)
 	if cfg.GroqAPIKey != "" {
-		llmClient = groq.NewClient(cfg.GroqAPIKey, cfg.GroqModel)
+		groqClient = groq.NewClient(cfg.GroqAPIKey, cfg.GroqModel)
+		llmClient = groqClient
 		utils.Info("[AI]", "using Groq model="+cfg.GroqModel)
 	} else {
 		llmClient = ollama.NewClient(cfg.OllamaURL, cfg.OllamaModel)
 		utils.Info("[AI]", "GROQ_API_KEY not set — using local Ollama model="+cfg.OllamaModel)
 	}
 	aiSvc := service.NewAIService(llmClient, boardRepo, taskRepo, linkedResourceRepo)
+
+	// Diagram generation — always Groq's compound model regardless of the
+	// chat/summarize provider above; no offline fallback (needs web search).
+	if groqClient == nil {
+		utils.Info("[AI]", "GROQ_API_KEY not set — diagram generation disabled")
+	}
+	diagramSvc := service.NewDiagramService(groqClient)
 
 	// Controllers
 	healthCtrl          := controller.NewHealthController()
@@ -150,6 +159,7 @@ func main() {
 	presenceCtrl        := controller.NewPresenceController(presenceSvc)
 	wsCtrl              := controller.NewWsController(hub, cfg.JWTSecret)
 	aiCtrl              := controller.NewAIController(aiSvc)
+	diagramCtrl         := controller.NewDiagramController(diagramSvc)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
 	gin.SetMode(cfg.GinMode)
@@ -167,7 +177,7 @@ func main() {
 		healthCtrl, boardCtrl, authCtrl, userCtrl, orgCtrl,
 		taskCtrl, dashboardCtrl, activityCtrl, analyticsCtrl,
 		notificationCtrl, linkedResourceCtrl, flowCtrl, flowVoteCtrl,
-		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, store,
+		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, diagramCtrl, store,
 	)
 
 	// ── 5. Start server ───────────────────────────────────────────────────────

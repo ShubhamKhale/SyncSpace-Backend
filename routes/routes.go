@@ -35,6 +35,7 @@ func SetupRoutes(
 	prc  *controller.PresenceController,
 	wsc *controller.WsController,
 	aic *controller.AIController,
+	dgc *controller.DiagramController,
 	store *session.Store,
 ) {
 	r.GET(constants.URIHealth, hc.GetHealth)
@@ -150,6 +151,9 @@ func SetupRoutes(
 			// AI — local model chat + summarization
 			jwtOnly.POST(constants.URIBoardAIChat, aic.ChatWithBoard)
 			jwtOnly.POST(constants.URIAISummarize, aic.Summarize)
+
+			// AI — diagram generation (Groq compound model only, no Ollama fallback)
+			jwtOnly.POST(constants.URIAIGenerateDiagram, dgc.GenerateDiagram)
 		}
 
 		// ── Protected routes: JWT + OrgContext + AES encryption ──────────────
