@@ -3,17 +3,26 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 
 	"syncspace-backend/errs"
 	"syncspace-backend/pkg/aiclient"
 	"syncspace-backend/pkg/groq"
+	"syncspace-backend/pkg/utils"
 )
 
 // diagramModel is fixed to Groq's web-search-backed compound model — this
 // feature has no local/Ollama equivalent, since it depends on live web
 // search to confirm real service names and architecture patterns.
-const diagramModel = "groq/compound"
+//
+// compound-mini (single tool call per request) is used instead of compound
+// (multiple tool calls) — compound's multi-search fan-out injects enough
+// search-result content into its internal sub-model context to blow past
+// the account's tokens-per-minute limit on ordinary prompts, returning a
+// 413 "request too large" even though the outgoing request body is tiny.
+const diagramModel = "groq/compound-mini"
 
 const diagramSystemPrompt = `You are a diagram generation engine with web search access.
 
@@ -73,12 +82,26 @@ func (s *DiagramService) GenerateDiagram(ctx context.Context, prompt string) (ma
 		return nil, errs.Internal("diagram generation requires GROQ_API_KEY to be configured")
 	}
 
-	reply, err := s.groqClient.ChatWithModel(ctx, diagramModel, []aiclient.Message{
+	messages := []aiclient.Message{
 		{Role: "system", Content: diagramSystemPrompt},
 		{Role: "user", Content: prompt},
-	})
+	}
+
+	reply, err := s.groqClient.ChatWithModel(ctx, diagramModel, messages)
 	if err != nil {
-		return nil, errs.Internal("diagram generation failed: " + err.Error())
+		var statusErr *groq.StatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusRequestEntityTooLarge {
+			// The web-search-grounded model's internal search-result content
+			// pushed the account's tokens-per-minute limit over the edge (see
+			// diagramModel comment). Fall back to the client's plain default
+			// model — no web-search grounding, but the feature still works
+			// instead of hard-failing on every prompt that triggers a search.
+			utils.Info("[AI]", "GenerateDiagram: compound-mini hit 413, falling back to non-search model")
+			reply, err = s.groqClient.Chat(ctx, messages)
+		}
+		if err != nil {
+			return nil, errs.Internal("diagram generation failed: " + err.Error())
+		}
 	}
 
 	var graph map[string]any

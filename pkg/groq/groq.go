@@ -17,6 +17,18 @@ import (
 
 const defaultBaseURL = "https://api.groq.com/openai/v1"
 
+// StatusError is returned when Groq responds with a non-200, non-429 status.
+// Callers can check StatusCode (e.g. errors.As) to react to specific cases,
+// such as 413 request_too_large from token-per-minute limits.
+type StatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("groq: unexpected status %d: %s", e.StatusCode, e.Body)
+}
+
 // Client talks to the Groq chat-completions API for a fixed model.
 // Implements aiclient.ChatClient.
 type Client struct {
@@ -101,7 +113,7 @@ func (c *Client) ChatWithModel(ctx context.Context, model string, messages []aic
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			payload, _ := io.ReadAll(resp.Body)
-			return "", fmt.Errorf("groq: unexpected status %d: %s", resp.StatusCode, string(payload))
+			return "", &StatusError{StatusCode: resp.StatusCode, Body: string(payload)}
 		}
 
 		var out chatResponse
