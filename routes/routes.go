@@ -101,6 +101,7 @@ func SetupRoutes(
 			jwtOnly.GET(constants.URITasksUpcoming, dc.GetUpcomingTasks)
 			jwtOnly.PATCH(constants.URITaskStage, tc.MoveTask)
 			jwtOnly.PATCH(constants.URITaskByID, tc.UpdateTask)
+			jwtOnly.DELETE(constants.URITaskByID, tc.DeleteTask)
 
 			// Dashboard
 			jwtOnly.GET(constants.URIDashboardStats, dc.GetStats)

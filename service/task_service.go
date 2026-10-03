@@ -24,10 +24,29 @@ var validPriorities = map[string]bool{
 	"high":   true,
 }
 
-// SubtaskInput is the create-time shape for a subtask (no ID yet).
+// SubtaskInput is the client-supplied shape for a subtask. ID is empty for new
+// subtasks (one is generated); on update, an existing ID is preserved.
 type SubtaskInput struct {
+	ID        string
 	Text      string
 	Completed bool
+}
+
+// TaskPatch holds a partial task update. A nil field is left unchanged.
+// For the date fields, a non-nil pointer to a nil *time.Time clears the date.
+type TaskPatch struct {
+	Title           *string
+	Description     *string
+	Priority        *string
+	Stage           *string
+	AssigneeID      *string // "" unassigns
+	DueDate         **time.Time
+	StartDate       **time.Time
+	Tags            *[]string
+	TimeEstimate    *string
+	ReferenceLink   *string
+	FlowDiagramLink *string
+	Subtasks        *[]SubtaskInput
 }
 
 // AttachmentInput is the create-time shape for an attachment (no ID/timestamp yet).
@@ -49,10 +68,81 @@ func NewTaskService(repo *database.TaskRepo, logger *ActivityLogger) *TaskServic
 	return &TaskService{repo: repo, logger: logger}
 }
 
+// requireBoardInOrg returns errs.NotFound unless the board belongs to orgID.
+// NotFound (not Forbidden) so callers can't probe for other orgs' board IDs.
+func (s *TaskService) requireBoardInOrg(ctx context.Context, boardID, orgID string) error {
+	ok, err := s.repo.BoardInOrg(ctx, boardID, orgID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errs.NotFound("board not found")
+	}
+	return nil
+}
+
+// getTaskInOrg loads a task, returning errs.NotFound unless its board belongs to orgID.
+func (s *TaskService) getTaskInOrg(ctx context.Context, taskID, orgID string) (*model.Task, error) {
+	taskOrg, err := s.repo.GetTaskOrgID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if taskOrg != orgID {
+		return nil, errs.NotFound("task not found")
+	}
+	return s.repo.GetTaskByID(ctx, taskID)
+}
+
+// validateAssignee ensures a non-empty assignee is an active member of the org.
+func (s *TaskService) validateAssignee(ctx context.Context, orgID, assigneeID string) error {
+	if assigneeID == "" {
+		return nil
+	}
+	ok, err := s.repo.IsActiveOrgMember(ctx, orgID, assigneeID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errs.BadRequest("assignee must be an active member of the organization")
+	}
+	return nil
+}
+
+func validateTags(tags []string) error {
+	if len(tags) > 10 {
+		return errs.BadRequest("tags: max 10 items allowed")
+	}
+	for _, t := range tags {
+		if len(t) > 50 {
+			return errs.BadRequest("tags: each tag must be 50 characters or fewer")
+		}
+	}
+	return nil
+}
+
+// buildSubtasks validates and converts subtask inputs, keeping existing IDs.
+func buildSubtasks(in []SubtaskInput) ([]model.Subtask, error) {
+	if len(in) > 50 {
+		return nil, errs.BadRequest("subtasks: max 50 items allowed")
+	}
+	out := make([]model.Subtask, 0, len(in))
+	for _, st := range in {
+		if st.Text == "" {
+			continue
+		}
+		id := st.ID
+		if id == "" {
+			id = utils.NewUUID()
+		}
+		out = append(out, model.Subtask{ID: id, Text: st.Text, Completed: st.Completed})
+	}
+	return out, nil
+}
+
 // CreateTask validates input and persists a new task on the given board.
 func (s *TaskService) CreateTask(
 	ctx context.Context,
-	createdBy, boardID, title, description, stage, priority, assigneeID string,
+	orgID, createdBy, boardID, title, description, stage, priority, assigneeID string,
 	dueDate *time.Time,
 	startDate *time.Time,
 	tags []string,
@@ -75,20 +165,18 @@ func (s *TaskService) CreateTask(
 	if !validPriorities[priority] {
 		return nil, errs.BadRequest("priority must be one of: low, medium, high")
 	}
-
-	// Tags validation
-	if len(tags) > 10 {
-		return nil, errs.BadRequest("tags: max 10 items allowed")
+	if err := s.requireBoardInOrg(ctx, boardID, orgID); err != nil {
+		return nil, err
 	}
-	for _, t := range tags {
-		if len(t) > 50 {
-			return nil, errs.BadRequest("tags: each tag must be 50 characters or fewer")
-		}
+	if err := s.validateAssignee(ctx, orgID, assigneeID); err != nil {
+		return nil, err
 	}
-
-	// Subtasks validation
-	if len(subtasks) > 50 {
-		return nil, errs.BadRequest("subtasks: max 50 items allowed")
+	if err := validateTags(tags); err != nil {
+		return nil, err
+	}
+	modelSubtasks, err := buildSubtasks(subtasks)
+	if err != nil {
+		return nil, err
 	}
 
 	// Attachments validation
@@ -110,16 +198,6 @@ func (s *TaskService) CreateTask(
 	}
 
 	now := time.Now()
-
-	// Build subtasks with generated IDs
-	modelSubtasks := make([]model.Subtask, len(subtasks))
-	for i, s := range subtasks {
-		modelSubtasks[i] = model.Subtask{
-			ID:        utils.NewUUID(),
-			Text:      s.Text,
-			Completed: s.Completed,
-		}
-	}
 
 	// Build attachments with generated IDs
 	modelAttachments := make([]model.Attachment, len(attachments))
@@ -169,12 +247,15 @@ func (s *TaskService) CreateTask(
 }
 
 // GetTasks returns tasks for a board with optional filtering.
-func (s *TaskService) GetTasks(ctx context.Context, boardID string, filter database.TaskFilter) ([]model.Task, error) {
+func (s *TaskService) GetTasks(ctx context.Context, orgID, boardID string, filter database.TaskFilter) ([]model.Task, error) {
 	if filter.Stage != "" && !validStages[filter.Stage] {
 		return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
 	}
 	if filter.Priority != "" && !validPriorities[filter.Priority] {
 		return nil, errs.BadRequest("priority must be one of: low, medium, high")
+	}
+	if err := s.requireBoardInOrg(ctx, boardID, orgID); err != nil {
+		return nil, err
 	}
 
 	tasks, err := s.repo.GetTasksByBoard(ctx, boardID, filter)
@@ -187,43 +268,85 @@ func (s *TaskService) GetTasks(ctx context.Context, boardID string, filter datab
 	return tasks, nil
 }
 
-// UpdateTask applies partial updates to mutable fields.
-func (s *TaskService) UpdateTask(
-	ctx context.Context,
-	taskID string,
-	title, description, priority, assigneeID *string,
-	dueDate **time.Time,
-) (*model.Task, error) {
-	task, err := s.repo.GetTaskByID(ctx, taskID)
+// UpdateTask applies a partial update to a task in the caller's org.
+// A stage change moves the task to the bottom of the new column.
+func (s *TaskService) UpdateTask(ctx context.Context, orgID, callerID, taskID string, p TaskPatch) (*model.Task, error) {
+	task, err := s.getTaskInOrg(ctx, taskID, orgID)
 	if err != nil {
 		return nil, err
 	}
 
 	changed := map[string]any{}
+	diff := func(field string, from, to any) {
+		changed[field] = map[string]any{"from": from, "to": to}
+	}
 
-	if title != nil {
-		if *title == "" {
+	if p.Title != nil {
+		if *p.Title == "" {
 			return nil, errs.BadRequest("title cannot be empty")
 		}
-		changed["title"] = map[string]any{"from": task.Title, "to": *title}
-		task.Title = *title
+		if *p.Title != task.Title {
+			diff("title", task.Title, *p.Title)
+		}
+		task.Title = *p.Title
 	}
-	if description != nil {
-		task.Description = *description
+	if p.Description != nil {
+		task.Description = *p.Description
 	}
-	if priority != nil {
-		if !validPriorities[*priority] {
+	if p.Priority != nil {
+		if !validPriorities[*p.Priority] {
 			return nil, errs.BadRequest("priority must be one of: low, medium, high")
 		}
-		changed["priority"] = map[string]any{"from": task.Priority, "to": *priority}
-		task.Priority = *priority
+		if *p.Priority != task.Priority {
+			diff("priority", task.Priority, *p.Priority)
+		}
+		task.Priority = *p.Priority
 	}
-	if assigneeID != nil {
-		changed["assignee_id"] = map[string]any{"from": task.AssigneeID, "to": *assigneeID}
-		task.AssigneeID = *assigneeID
+	newStage := ""
+	if p.Stage != nil && *p.Stage != task.Stage {
+		if !validStages[*p.Stage] {
+			return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
+		}
+		diff("stage", task.Stage, *p.Stage)
+		newStage = *p.Stage
 	}
-	if dueDate != nil {
-		task.DueDate = *dueDate
+	if p.AssigneeID != nil && *p.AssigneeID != task.AssigneeID {
+		if err := s.validateAssignee(ctx, orgID, *p.AssigneeID); err != nil {
+			return nil, err
+		}
+		diff("assignee_id", task.AssigneeID, *p.AssigneeID)
+		task.AssigneeID = *p.AssigneeID
+	}
+	if p.DueDate != nil {
+		task.DueDate = *p.DueDate
+	}
+	if p.StartDate != nil {
+		task.StartDate = *p.StartDate
+	}
+	if task.StartDate != nil && task.DueDate != nil && task.DueDate.Before(*task.StartDate) {
+		return nil, errs.BadRequest("due_date cannot be before start_date")
+	}
+	if p.Tags != nil {
+		if err := validateTags(*p.Tags); err != nil {
+			return nil, err
+		}
+		task.Tags = *p.Tags
+	}
+	if p.TimeEstimate != nil {
+		task.TimeEstimate = *p.TimeEstimate
+	}
+	if p.ReferenceLink != nil {
+		task.ReferenceLink = *p.ReferenceLink
+	}
+	if p.FlowDiagramLink != nil {
+		task.FlowDiagramLink = *p.FlowDiagramLink
+	}
+	if p.Subtasks != nil {
+		subs, err := buildSubtasks(*p.Subtasks)
+		if err != nil {
+			return nil, err
+		}
+		task.Subtasks = subs
 	}
 
 	task.UpdatedAt = time.Now()
@@ -231,13 +354,43 @@ func (s *TaskService) UpdateTask(
 		return nil, err
 	}
 
-	s.logger.LogTask(ctx, task.CreatedBy, task.ID, ActionUpdated, changed)
+	if newStage != "" {
+		pos := s.repo.NextPosition(ctx, task.BoardID, newStage)
+		if err := s.repo.UpdateTaskStage(ctx, task.ID, task.BoardID, newStage, pos); err != nil {
+			return nil, err
+		}
+		task.Stage = newStage
+		task.Position = pos
+	}
+
+	action := ActionUpdated
+	if _, onlyAssignee := changed["assignee_id"]; onlyAssignee && len(changed) == 1 {
+		action = ActionAssigned
+	}
+	s.logger.LogTask(ctx, callerID, task.ID, action, changed)
 
 	return task, nil
 }
 
+// DeleteTask permanently removes a task in the caller's org.
+func (s *TaskService) DeleteTask(ctx context.Context, orgID, callerID, taskID string) error {
+	task, err := s.getTaskInOrg(ctx, taskID, orgID)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.DeleteTask(ctx, taskID); err != nil {
+		return err
+	}
+	s.logger.LogTask(ctx, callerID, taskID, ActionDeleted, map[string]any{
+		"board_id": task.BoardID,
+		"title":    task.Title,
+		"stage":    task.Stage,
+	})
+	return nil
+}
+
 // MoveTask moves a task to a new stage at the given 0-based position.
-func (s *TaskService) MoveTask(ctx context.Context, taskID, boardID, newStage string, newPosition int) (*model.Task, error) {
+func (s *TaskService) MoveTask(ctx context.Context, orgID, callerID, taskID, boardID, newStage string, newPosition int) (*model.Task, error) {
 	if !validStages[newStage] {
 		return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
 	}
@@ -245,7 +398,7 @@ func (s *TaskService) MoveTask(ctx context.Context, taskID, boardID, newStage st
 		return nil, errs.BadRequest("position must be >= 0")
 	}
 
-	before, err := s.repo.GetTaskByID(ctx, taskID)
+	before, err := s.getTaskInOrg(ctx, taskID, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +412,7 @@ func (s *TaskService) MoveTask(ctx context.Context, taskID, boardID, newStage st
 		return nil, err
 	}
 
-	s.logger.LogTask(ctx, before.CreatedBy, task.ID, ActionMoved, map[string]any{
+	s.logger.LogTask(ctx, callerID, task.ID, ActionMoved, map[string]any{
 		"from":     before.Stage,
 		"to":       newStage,
 		"position": newPosition,
