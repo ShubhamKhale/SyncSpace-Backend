@@ -13,6 +13,8 @@ type Board struct {
 	OrgID       string    `json:"org_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// MemberCount is populated only by list queries (board members = active org members).
+	MemberCount int `json:"member_count"`
 }
 
 // BoardHealth summarises a board's task risk profile, derived from its tasks.
