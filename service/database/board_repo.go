@@ -73,8 +73,8 @@ func (r *BoardRepo) GetBoardByIDAndOrg(ctx context.Context, boardID, orgID strin
 // GetBoardsByOrg returns all boards for the given org, newest first.
 func (r *BoardRepo) GetBoardsByOrg(ctx context.Context, orgID string) ([]model.Board, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, title, description, owner_id, org_id, created_at, updated_at
-		 FROM   public.boards
+		`SELECT id, title, description, owner_id, org_id, created_at, updated_at, `+activeMemberCountCol+`
+		 FROM   public.boards b
 		 WHERE  org_id = $1
 		 ORDER  BY created_at DESC`,
 		orgID,
@@ -84,14 +84,14 @@ func (r *BoardRepo) GetBoardsByOrg(ctx context.Context, orgID string) ([]model.B
 	}
 	defer rows.Close()
 
-	return collectBoards(rows)
+	return collectBoardsWithMemberCount(rows)
 }
 
 // GetRecentBoardsByOrg returns the most recently updated boards for the org.
 func (r *BoardRepo) GetRecentBoardsByOrg(ctx context.Context, orgID string, limit int) ([]model.Board, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, title, description, owner_id, org_id, created_at, updated_at
-		 FROM   public.boards
+		`SELECT id, title, description, owner_id, org_id, created_at, updated_at, `+activeMemberCountCol+`
+		 FROM   public.boards b
 		 WHERE  org_id = $1
 		 ORDER  BY updated_at DESC
 		 LIMIT  $2`,
@@ -102,7 +102,7 @@ func (r *BoardRepo) GetRecentBoardsByOrg(ctx context.Context, orgID string, limi
 	}
 	defer rows.Close()
 
-	return collectBoards(rows)
+	return collectBoardsWithMemberCount(rows)
 }
 
 // GetBoardsByOwner returns all boards owned by the given user. Kept for internal use.
@@ -273,6 +273,27 @@ func (r *BoardRepo) GetBoardMembers(ctx context.Context, boardID, orgID string) 
 }
 
 // collectBoards scans all rows from a board query into a slice.
+// activeMemberCountCol is a correlated subquery (board alias "b") counting the
+// board's members — mirrors GetBoardMembers, where board members = active org members.
+const activeMemberCountCol = `(SELECT COUNT(*)::int FROM public.organization_members om
+	  WHERE om.organization_id = b.org_id AND om.status = 'active') AS member_count`
+
+// collectBoardsWithMemberCount scans rows in the standard column order plus member_count.
+func collectBoardsWithMemberCount(rows pgx.Rows) ([]model.Board, error) {
+	var boards []model.Board
+	for rows.Next() {
+		var b model.Board
+		if err := rows.Scan(&b.ID, &b.Title, &b.Description, &b.OwnerID, &b.OrgID, &b.CreatedAt, &b.UpdatedAt, &b.MemberCount); err != nil {
+			return nil, errs.Internal("failed to scan board row")
+		}
+		boards = append(boards, b)
+	}
+	if rows.Err() != nil {
+		return nil, errs.Internal("board query error")
+	}
+	return boards, nil
+}
+
 func collectBoards(rows pgx.Rows) ([]model.Board, error) {
 	var boards []model.Board
 	for rows.Next() {
