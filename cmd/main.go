@@ -3,7 +3,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -12,8 +15,8 @@ import (
 	"syncspace-backend/constants"
 	"syncspace-backend/controller"
 	"syncspace-backend/pkg/aiclient"
-	"syncspace-backend/pkg/db"
 	pkgcloudinary "syncspace-backend/pkg/cloudinary"
+	"syncspace-backend/pkg/db"
 	pkgemail "syncspace-backend/pkg/email"
 	"syncspace-backend/pkg/groq"
 	"syncspace-backend/pkg/ollama"
@@ -60,20 +63,20 @@ func main() {
 	store := session.NewStore()
 
 	// Repos
-	userRepo            := database.NewUserRepo(db.Pool)
-	userPrefsRepo       := database.NewUserPrefsRepo(db.Pool)
-	boardRepo           := database.NewBoardRepo(db.Pool)
-	orgRepo             := database.NewOrgRepo(db.Pool)
-	inviteTokenRepo     := database.NewInviteTokenRepo(db.Pool)
-	taskRepo            := database.NewTaskRepo(db.Pool)
-	dashboardRepo       := database.NewDashboardRepo(db.Pool)
-	activityRepo        := database.NewActivityRepo(db.Pool)
-	analyticsRepo       := database.NewAnalyticsRepo(db.Pool)
-	notificationRepo    := database.NewNotificationRepo(db.Pool)
-	linkedResourceRepo  := database.NewLinkedResourceRepo(db.Pool)
-	flowRepo            := database.NewFlowRepo(db.Pool)
-	flowVoteRepo        := database.NewFlowVoteRepo(db.Pool)
-	boardFlowVoteRepo   := database.NewBoardFlowVoteRepo(db.Pool)
+	userRepo := database.NewUserRepo(db.Pool)
+	userPrefsRepo := database.NewUserPrefsRepo(db.Pool)
+	boardRepo := database.NewBoardRepo(db.Pool)
+	orgRepo := database.NewOrgRepo(db.Pool)
+	inviteTokenRepo := database.NewInviteTokenRepo(db.Pool)
+	taskRepo := database.NewTaskRepo(db.Pool)
+	dashboardRepo := database.NewDashboardRepo(db.Pool)
+	activityRepo := database.NewActivityRepo(db.Pool)
+	analyticsRepo := database.NewAnalyticsRepo(db.Pool)
+	notificationRepo := database.NewNotificationRepo(db.Pool)
+	linkedResourceRepo := database.NewLinkedResourceRepo(db.Pool)
+	flowRepo := database.NewFlowRepo(db.Pool)
+	flowVoteRepo := database.NewFlowVoteRepo(db.Pool)
+	boardFlowVoteRepo := database.NewBoardFlowVoteRepo(db.Pool)
 
 	activityLogger := service.NewActivityLogger(activityRepo)
 
@@ -101,28 +104,28 @@ func main() {
 	}
 
 	// Services
-	authSvc          := service.NewAuthService(userRepo, orgRepo, inviteTokenRepo, store, cfg.JWTSecret)
-	userSvc          := service.NewUserService(userRepo, userPrefsRepo)
-	boardSvc         := service.NewBoardService(boardRepo, activityLogger)
-	orgSvc           := service.NewOrgService(orgRepo, userRepo, inviteTokenRepo, emailTemplateRepo, mailer, cfg.FrontendURL)
-	taskSvc          := service.NewTaskService(taskRepo, activityLogger)
-	dashboardSvc     := service.NewDashboardService(dashboardRepo, boardRepo, taskRepo)
-	activitySvc      := service.NewActivityService(activityRepo)
-	analyticsSvc     := service.NewAnalyticsService(analyticsRepo)
-	notificationSvc  := service.NewNotificationService(notificationRepo)
+	authSvc := service.NewAuthService(userRepo, orgRepo, inviteTokenRepo, store, cfg.JWTSecret)
+	userSvc := service.NewUserService(userRepo, userPrefsRepo)
+	boardSvc := service.NewBoardService(boardRepo, activityLogger)
+	orgSvc := service.NewOrgService(orgRepo, userRepo, inviteTokenRepo, emailTemplateRepo, mailer, cfg.FrontendURL)
+	taskSvc := service.NewTaskService(taskRepo, activityLogger)
+	dashboardSvc := service.NewDashboardService(dashboardRepo, boardRepo, taskRepo)
+	activitySvc := service.NewActivityService(activityRepo)
+	analyticsSvc := service.NewAnalyticsService(analyticsRepo)
+	notificationSvc := service.NewNotificationService(notificationRepo)
 	linkedResourceSvc := service.NewLinkedResourceService(linkedResourceRepo, boardRepo, activityLogger)
-	flowSvc          := service.NewFlowService(flowRepo)
-	flowVoteSvc      := service.NewFlowVoteService(flowVoteRepo, flowRepo)
-	boardFlowSvc     := service.NewBoardFlowService(database.NewBoardFlowRepo(db.Pool), boardRepo)
+	flowSvc := service.NewFlowService(flowRepo)
+	flowVoteSvc := service.NewFlowVoteService(flowVoteRepo, flowRepo)
+	boardFlowSvc := service.NewBoardFlowService(database.NewBoardFlowRepo(db.Pool), boardRepo)
 	boardFlowVoteSvc := service.NewBoardFlowVoteService(boardFlowVoteRepo, boardRepo)
-	var presenceSvc  *service.PresenceService
+	var presenceSvc *service.PresenceService
 	if pkgredis.Client != nil {
 		presenceSvc = service.NewPresenceService(pkgredis.Client, userRepo)
 	}
 
 	// AI — Groq in prod (GROQ_API_KEY set), local Ollama in dev otherwise.
 	var llmClient aiclient.ChatClient
-	var groqClient *groq.Client // kept for diagram generation, which is Groq-only (needs groq/compound's web search)
+	var groqClient *groq.Client // kept for diagram generation, which is Groq-only (needs Groq's built-in web search)
 	if cfg.GroqAPIKey != "" {
 		groqClient = groq.NewClient(cfg.GroqAPIKey, cfg.GroqModel)
 		llmClient = groqClient
@@ -133,33 +136,39 @@ func main() {
 	}
 	aiSvc := service.NewAIService(llmClient, boardRepo, taskRepo, linkedResourceRepo)
 
-	// Diagram generation — always Groq's compound model regardless of the
-	// chat/summarize provider above; no offline fallback (needs web search).
+	// Diagram generation — Groq-only regardless of the chat/summarize provider
+	// above (needs Groq's built-in web search); no Ollama fallback.
 	if groqClient == nil {
 		utils.Info("[AI]", "GROQ_API_KEY not set — diagram generation disabled")
+	} else {
+		utils.Info("[AI]", fmt.Sprintf("diagram model=%s web_search=%t fallback=%s",
+			cfg.GroqDiagramModel, cfg.GroqDiagramWebSearch, cfg.GroqModel))
+		// Warn at boot (not on the first user request) if a configured model
+		// isn't available to this key — e.g. a retired or project-disabled model.
+		go checkGroqModels(groqClient, cfg.GroqDiagramModel, cfg.GroqModel)
 	}
-	diagramSvc := service.NewDiagramService(groqClient)
+	diagramSvc := service.NewDiagramService(groqClient, cfg.GroqDiagramModel, cfg.GroqDiagramWebSearch)
 
 	// Controllers
-	healthCtrl          := controller.NewHealthController()
-	authCtrl            := controller.NewAuthController(authSvc)
-	userCtrl            := controller.NewUserController(userSvc, cldUploader)
-	boardCtrl           := controller.NewBoardController(boardSvc)
-	orgCtrl             := controller.NewOrgController(orgSvc)
-	taskCtrl            := controller.NewTaskController(taskSvc)
-	dashboardCtrl       := controller.NewDashboardController(dashboardSvc)
-	activityCtrl        := controller.NewActivityController(activitySvc)
-	analyticsCtrl       := controller.NewAnalyticsController(analyticsSvc)
-	notificationCtrl    := controller.NewNotificationController(notificationSvc)
-	linkedResourceCtrl  := controller.NewLinkedResourceController(linkedResourceSvc)
-	flowCtrl            := controller.NewFlowController(flowSvc)
-	flowVoteCtrl        := controller.NewFlowVoteController(flowVoteSvc)
-	boardFlowCtrl       := controller.NewBoardFlowController(boardFlowSvc, hub)
-	boardFlowVoteCtrl   := controller.NewBoardFlowVoteController(boardFlowVoteSvc)
-	presenceCtrl        := controller.NewPresenceController(presenceSvc)
-	wsCtrl              := controller.NewWsController(hub, cfg.JWTSecret)
-	aiCtrl              := controller.NewAIController(aiSvc)
-	diagramCtrl         := controller.NewDiagramController(diagramSvc)
+	healthCtrl := controller.NewHealthController()
+	authCtrl := controller.NewAuthController(authSvc)
+	userCtrl := controller.NewUserController(userSvc, cldUploader)
+	boardCtrl := controller.NewBoardController(boardSvc)
+	orgCtrl := controller.NewOrgController(orgSvc)
+	taskCtrl := controller.NewTaskController(taskSvc)
+	dashboardCtrl := controller.NewDashboardController(dashboardSvc)
+	activityCtrl := controller.NewActivityController(activitySvc)
+	analyticsCtrl := controller.NewAnalyticsController(analyticsSvc)
+	notificationCtrl := controller.NewNotificationController(notificationSvc)
+	linkedResourceCtrl := controller.NewLinkedResourceController(linkedResourceSvc)
+	flowCtrl := controller.NewFlowController(flowSvc)
+	flowVoteCtrl := controller.NewFlowVoteController(flowVoteSvc)
+	boardFlowCtrl := controller.NewBoardFlowController(boardFlowSvc, hub)
+	boardFlowVoteCtrl := controller.NewBoardFlowVoteController(boardFlowVoteSvc)
+	presenceCtrl := controller.NewPresenceController(presenceSvc)
+	wsCtrl := controller.NewWsController(hub, cfg.JWTSecret)
+	aiCtrl := controller.NewAIController(aiSvc)
+	diagramCtrl := controller.NewDiagramController(diagramSvc)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
 	gin.SetMode(cfg.GinMode)
@@ -185,5 +194,28 @@ func main() {
 	utils.Info(constants.LogTagMain, "starting server on "+addr)
 	if err := r.Run(addr); err != nil {
 		log.Fatalf("%s server failed: %v", constants.LogTagMain, err)
+	}
+}
+
+// checkGroqModels logs a warning for each configured Groq model this API key
+// can't use. Runs once at startup so a retired or project-disabled model shows
+// up in the deploy logs instead of as a user-facing 404.
+func checkGroqModels(client *groq.Client, models ...string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	available, err := client.ListModels(ctx)
+	if err != nil {
+		utils.Error("[AI]", "could not list Groq models for startup check", err)
+		return
+	}
+	have := make(map[string]bool, len(available))
+	for _, id := range available {
+		have[id] = true
+	}
+	for _, m := range models {
+		if !have[m] {
+			utils.Info("[AI]", "WARNING: Groq model "+m+" is not available to this API key — available: "+strings.Join(available, ", "))
+		}
 	}
 }

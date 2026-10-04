@@ -37,6 +37,12 @@ type Config struct {
 	// When GroqAPIKey is set, it takes priority over Ollama.
 	GroqAPIKey string
 	GroqModel  string
+
+	// Diagram generation model. When GroqDiagramWebSearch is true, Groq's
+	// built-in browser_search tool is enabled (supported on openai/gpt-oss-*).
+	// On any failure the service falls back to GroqModel without tools.
+	GroqDiagramModel     string
+	GroqDiagramWebSearch bool
 }
 
 // Load reads the .env file and returns a populated Config.
@@ -67,6 +73,9 @@ func Load() *Config {
 
 		GroqAPIKey: getEnv("GROQ_API_KEY", ""),
 		GroqModel:  getEnv("GROQ_MODEL", "openai/gpt-oss-20b"),
+
+		GroqDiagramModel:     getEnv("GROQ_DIAGRAM_MODEL", "openai/gpt-oss-120b"),
+		GroqDiagramWebSearch: getEnv("GROQ_DIAGRAM_WEB_SEARCH", "true") == "true",
 	}
 
 	if cfg.DBURL == "" {
