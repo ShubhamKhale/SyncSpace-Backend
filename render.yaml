@@ -32,3 +32,7 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-20b
+      - key: GROQ_DIAGRAM_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_DIAGRAM_WEB_SEARCH
+        value: "true"
