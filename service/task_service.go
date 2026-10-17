@@ -268,6 +268,21 @@ func (s *TaskService) GetTasks(ctx context.Context, orgID, boardID string, filte
 	return tasks, nil
 }
 
+// GetOrgTasks returns every task across the caller's org boards (with board
+// titles). filter.AssigneeID "me" is resolved to callerID.
+func (s *TaskService) GetOrgTasks(ctx context.Context, orgID, callerID string, filter database.OrgTaskFilter) ([]model.Task, error) {
+	if filter.Stage != "" && !validStages[filter.Stage] {
+		return nil, errs.BadRequest("stage must be one of: Planning, Design, Development, QA, Deployment")
+	}
+	if filter.Priority != "" && !validPriorities[filter.Priority] {
+		return nil, errs.BadRequest("priority must be one of: low, medium, high")
+	}
+	if filter.AssigneeID == "me" {
+		filter.AssigneeID = callerID
+	}
+	return s.repo.GetTasksByOrg(ctx, orgID, filter)
+}
+
 // UpdateTask applies a partial update to a task in the caller's org.
 // A stage change moves the task to the bottom of the new column.
 func (s *TaskService) UpdateTask(ctx context.Context, orgID, callerID, taskID string, p TaskPatch) (*model.Task, error) {

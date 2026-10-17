@@ -162,6 +162,32 @@ func (tc *TaskController) GetTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, data.OK(tasks))
 }
 
+// GetOrgTasks handles GET /api/tasks — every task across the caller's org
+// boards. Optional query filters: board_id, stage, priority, assignee_id
+// ("me" = the caller).
+func (tc *TaskController) GetOrgTasks(c *gin.Context) {
+	orgID, ok := taskAccess(c, false)
+	if !ok {
+		return
+	}
+
+	filter := database.OrgTaskFilter{
+		BoardID:    c.Query("board_id"),
+		Stage:      c.Query("stage"),
+		Priority:   c.Query("priority"),
+		AssigneeID: c.Query("assignee_id"),
+	}
+
+	tasks, err := tc.svc.GetOrgTasks(c.Request.Context(), orgID, mustUserID(c), filter)
+	if err != nil {
+		utils.Error(constants.LogTagTask, "GetOrgTasks failed org="+orgID, err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+
+	c.JSON(http.StatusOK, data.OK(tasks))
+}
+
 // CreateTask handles POST /api/boards/:id/tasks.
 func (tc *TaskController) CreateTask(c *gin.Context) {
 	orgID, ok := taskAccess(c, true)

@@ -15,6 +15,8 @@ type BoardFlow struct {
 	EdgeCount int       `json:"edgeCount"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// BoardTitle is set only by the org-wide flow list (GET /api/flows).
+	BoardTitle string `json:"boardTitle,omitempty"`
 }
 
 // DiagramData is the full canvas state stored in the flow_diagrams table.

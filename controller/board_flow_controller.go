@@ -53,6 +53,22 @@ type renameFlowRequest struct {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
+// ListOrgFlows handles GET /api/flows — flow metadata for every board in the
+// caller's org, each with its board title.
+func (bfc *BoardFlowController) ListOrgFlows(c *gin.Context) {
+	orgID, _ := boardFlowCtx(c)
+	if !requireOrg(c, orgID) {
+		return
+	}
+	flows, err := bfc.svc.ListOrgFlows(c.Request.Context(), orgID)
+	if err != nil {
+		utils.Error("[FLOW]", "ListOrgFlows failed org="+orgID, err)
+		c.JSON(appErrStatus(err), data.Fail(appErrMsg(err)))
+		return
+	}
+	c.JSON(http.StatusOK, data.OK(flows))
+}
+
 // ListFlows handles GET /api/boards/:id/flows.
 func (bfc *BoardFlowController) ListFlows(c *gin.Context) {
 	orgID, _ := boardFlowCtx(c)

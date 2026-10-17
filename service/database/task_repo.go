@@ -160,6 +160,64 @@ func (r *TaskRepo) GetTasksByBoard(ctx context.Context, boardID string, f TaskFi
 	return tasks, nil
 }
 
+// OrgTaskFilter holds optional filters for the org-wide task list.
+// A zero-value field means "no filter on this column".
+type OrgTaskFilter struct {
+	BoardID    string
+	Stage      string
+	Priority   string
+	AssigneeID string
+}
+
+// GetTasksByOrg returns every task on the org's boards, each with its board's
+// title, ordered by due date (undated last) then most recently updated.
+func (r *TaskRepo) GetTasksByOrg(ctx context.Context, orgID string, f OrgTaskFilter) ([]model.Task, error) {
+	opt := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+
+	rows, err := r.db.Query(ctx,
+		`SELECT t.id, t.board_id, t.title, t.description, t.stage, t.priority,
+		        COALESCE(t.assignee_id,''), t.created_by, t.position, t.due_date, t.start_date,
+		        t.tags, t.time_estimate, t.reference_link, t.flow_diagram_link,
+		        t.subtasks, t.attachments, t.created_at, t.updated_at,
+		        b.title
+		 FROM   public.tasks t
+		 JOIN   public.boards b ON b.id = t.board_id
+		 WHERE  b.org_id = $1
+		   AND ($2::text IS NULL OR t.board_id    = $2)
+		   AND ($3::text IS NULL OR t.stage       = $3)
+		   AND ($4::text IS NULL OR t.priority    = $4)
+		   AND ($5::text IS NULL OR t.assignee_id = $5)
+		 ORDER BY t.due_date ASC NULLS LAST, t.updated_at DESC`,
+		orgID, opt(f.BoardID), opt(f.Stage), opt(f.Priority), opt(f.AssigneeID),
+	)
+	if err != nil {
+		return nil, errs.Internal("failed to query org tasks")
+	}
+	defer rows.Close()
+
+	tasks := []model.Task{}
+	for rows.Next() {
+		var boardTitle string
+		t, err := scanTaskRow(func(dest ...any) error {
+			return rows.Scan(append(dest, &boardTitle)...)
+		})
+		if err != nil {
+			return nil, errs.Internal("failed to scan org task row")
+		}
+		t.BoardTitle = boardTitle
+		tasks = append(tasks, *t)
+	}
+	if rows.Err() != nil {
+		return nil, errs.Internal("org task query error")
+	}
+	return tasks, nil
+}
+
 // NextPosition returns the next free position (bottom slot) in a board's stage column.
 func (r *TaskRepo) NextPosition(ctx context.Context, boardID, stage string) int {
 	var pos int

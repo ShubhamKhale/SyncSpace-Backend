@@ -76,6 +76,36 @@ func (r *BoardFlowRepo) ListByBoard(ctx context.Context, boardID string) ([]mode
 	return flows, nil
 }
 
+// ListByOrg returns flow metadata for every board in the org, each with its
+// board's title, newest-updated first.
+func (r *BoardFlowRepo) ListByOrg(ctx context.Context, orgID string) ([]model.BoardFlow, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT f.id, f.board_id, f.name, f.node_count, f.edge_count, f.created_at, f.updated_at, b.title
+		 FROM   public.board_flows f
+		 JOIN   public.boards b ON b.id = f.board_id
+		 WHERE  b.org_id = $1
+		 ORDER  BY f.updated_at DESC`,
+		orgID,
+	)
+	if err != nil {
+		return nil, errs.Internal("failed to query org flows")
+	}
+	defer rows.Close()
+
+	flows := []model.BoardFlow{}
+	for rows.Next() {
+		f := model.BoardFlow{}
+		if err := rows.Scan(&f.ID, &f.BoardID, &f.Name, &f.NodeCount, &f.EdgeCount, &f.CreatedAt, &f.UpdatedAt, &f.BoardTitle); err != nil {
+			return nil, errs.Internal("failed to scan org flow row")
+		}
+		flows = append(flows, f)
+	}
+	if rows.Err() != nil {
+		return nil, errs.Internal("org flow list query error")
+	}
+	return flows, nil
+}
+
 // Create inserts a new board_flows row and its default flow_diagrams row in one transaction.
 func (r *BoardFlowRepo) Create(ctx context.Context, f *model.BoardFlow) error {
 	tx, err := r.db.Begin(ctx)

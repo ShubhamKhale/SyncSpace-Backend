@@ -34,6 +34,11 @@ func denyViewer(orgRole string) error {
 }
 
 // ListFlows returns all flow metadata for a board, newest-updated first.
+// ListOrgFlows returns flow metadata for every board in the org, with board titles.
+func (s *BoardFlowService) ListOrgFlows(ctx context.Context, orgID string) ([]model.BoardFlow, error) {
+	return s.repo.ListByOrg(ctx, orgID)
+}
+
 func (s *BoardFlowService) ListFlows(ctx context.Context, boardID, orgID string) ([]model.BoardFlow, error) {
 	if err := s.verifyBoard(ctx, boardID, orgID); err != nil {
 		return nil, err

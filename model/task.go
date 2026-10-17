@@ -44,4 +44,6 @@ type Task struct {
 	Attachments     []Attachment `json:"attachments"`
 	CreatedAt       time.Time    `json:"created_at"`
 	UpdatedAt       time.Time    `json:"updated_at"`
+	// BoardTitle is set only by the org-wide task list (GET /api/tasks).
+	BoardTitle string `json:"board_title,omitempty"`
 }

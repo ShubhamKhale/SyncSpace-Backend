@@ -30,9 +30,9 @@ func SetupRoutes(
 	lrc *controller.LinkedResourceController,
 	fc *controller.FlowController,
 	fvc *controller.FlowVoteController,
-	bfc  *controller.BoardFlowController,
+	bfc *controller.BoardFlowController,
 	bfvc *controller.BoardFlowVoteController,
-	prc  *controller.PresenceController,
+	prc *controller.PresenceController,
 	wsc *controller.WsController,
 	aic *controller.AIController,
 	dgc *controller.DiagramController,
@@ -98,6 +98,7 @@ func SetupRoutes(
 			// Tasks
 			jwtOnly.GET(constants.URIBoardTasks, tc.GetTasks)
 			jwtOnly.POST(constants.URIBoardTasks, tc.CreateTask)
+			jwtOnly.GET(constants.URITasks, tc.GetOrgTasks)
 			jwtOnly.GET(constants.URITasksUpcoming, dc.GetUpcomingTasks)
 			jwtOnly.PATCH(constants.URITaskStage, tc.MoveTask)
 			jwtOnly.PATCH(constants.URITaskByID, tc.UpdateTask)
@@ -135,6 +136,7 @@ func SetupRoutes(
 			jwtOnly.DELETE(constants.URIFlowParticipantsLeave, prc.Leave)
 
 			// Board flow diagrams (multi-flow CRUD + duplicate + diagram data)
+			jwtOnly.GET(constants.URIFlows, bfc.ListOrgFlows)
 			jwtOnly.GET(constants.URIBoardFlows, bfc.ListFlows)
 			jwtOnly.POST(constants.URIBoardFlows, bfc.CreateFlow)
 			jwtOnly.GET(constants.URIBoardFlowByID, bfc.GetFlow)
