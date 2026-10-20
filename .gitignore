@@ -19,3 +19,7 @@ vendor/
 .DS_Store
 Thumbs.db
 .neon
+
+# Database dumps (may contain real user data)
+*.dump
+dump*.sql
