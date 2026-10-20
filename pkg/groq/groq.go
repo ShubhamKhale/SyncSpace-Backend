@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"syncspace-backend/pkg/aiclient"
@@ -17,12 +20,35 @@ import (
 
 const defaultBaseURL = "https://api.groq.com/openai/v1"
 
-// StatusError is returned when Groq responds with a non-200, non-429 status.
-// Callers can check StatusCode (e.g. errors.As) to react to specific cases,
-// such as 413 request_too_large from token-per-minute limits.
+// StatusError is returned when Groq responds with a non-200 status (including
+// a 429 once retries are exhausted or disabled). Callers can check StatusCode
+// (e.g. errors.As) to react to specific cases, such as 413/429 rate limits.
 type StatusError struct {
 	StatusCode int
 	Body       string
+	// RetryAfter is how long Groq says to wait before retrying (429s only;
+	// zero when unknown). Taken from the retry-after header, else parsed from
+	// the "Please try again in 4.2s" hint in the error message.
+	RetryAfter time.Duration
+}
+
+// retryHintRe captures the whole Go-style duration token ("4.2s", "820ms",
+// "1m2.5s") so time.ParseDuration reads its units — matching unit pieces
+// separately misread "820ms" as 820 minutes.
+var retryHintRe = regexp.MustCompile(`try again in ([\d.hms]+)`)
+
+// parseRetryAfter reads Groq's suggested wait from a 429 response.
+func parseRetryAfter(header, body string) time.Duration {
+	if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
+		return time.Duration(secs * float64(time.Second))
+	}
+	if m := retryHintRe.FindStringSubmatch(body); m != nil {
+		// Drop the sentence-ending "." captured after e.g. "4.2s."
+		if d, err := time.ParseDuration(strings.TrimRight(m[1], ".")); err == nil {
+			return d
+		}
+	}
+	return 0
 }
 
 func (e *StatusError) Error() string {
@@ -49,6 +75,14 @@ func NewClient(apiKey, model string) *Client {
 	}
 }
 
+// NewClientWithBaseURL is NewClient against a different API root — used by
+// tests to point the client at a fake server.
+func NewClientWithBaseURL(apiKey, model, baseURL string) *Client {
+	c := NewClient(apiKey, model)
+	c.baseURL = baseURL
+	return c
+}
+
 // Tool is a Groq built-in (server-side) tool, e.g. {Type: "browser_search"}
 // on the openai/gpt-oss models. Groq runs the tool itself — no client loop.
 type Tool struct {
@@ -66,18 +100,46 @@ type Request struct {
 	// NoRetry fails immediately on 429 instead of backing off — for callers
 	// that have their own fallback and shouldn't make the user wait.
 	NoRetry bool
+	// MaxTokens caps output tokens (max_completion_tokens). Reasoning models
+	// spend part of this on hidden reasoning, so it must leave room for the
+	// answer; 0 uses Groq's default.
+	MaxTokens int
+	// ReasoningEffort for reasoning models: "low"|"medium"|"high" on
+	// openai/gpt-oss-*, "none"|"default" on qwen. Empty = model default.
+	ReasoningEffort string
+	// JSONMode forces a syntactically valid JSON object reply
+	// (response_format json_object). Not combined with tools.
+	JSONMode bool
+}
+
+// Result is a completed reply plus metadata useful for diagnostics.
+type Result struct {
+	Content          string
+	FinishReason     string // "stop", or "length" when MaxTokens cut the reply off
+	CompletionTokens int
+}
+
+type responseFormat struct {
+	Type string `json:"type"`
 }
 
 type chatRequest struct {
-	Model    string             `json:"model"`
-	Messages []aiclient.Message `json:"messages"`
-	Tools    []Tool             `json:"tools,omitempty"`
+	Model           string             `json:"model"`
+	Messages        []aiclient.Message `json:"messages"`
+	Tools           []Tool             `json:"tools,omitempty"`
+	MaxTokens       int                `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
+	ResponseFormat  *responseFormat    `json:"response_format,omitempty"`
 }
 
 type chatResponse struct {
 	Choices []struct {
-		Message aiclient.Message `json:"message"`
+		Message      aiclient.Message `json:"message"`
+		FinishReason string           `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 // Model returns the client's default model.
@@ -136,12 +198,25 @@ func (c *Client) ChatWithModel(ctx context.Context, model string, messages []aic
 	return c.Complete(ctx, Request{Model: model, Messages: messages})
 }
 
-// Complete sends a chat-completion request with optional built-in tools.
-// Retries 429s with backoff unless req.NoRetry is set.
+// Complete sends a chat-completion request with optional built-in tools and
+// returns just the reply text. Retries 429s with backoff unless req.NoRetry.
 func (c *Client) Complete(ctx context.Context, r Request) (string, error) {
-	body, err := json.Marshal(chatRequest{Model: r.Model, Messages: r.Messages, Tools: r.Tools})
+	res, err := c.CompleteResult(ctx, r)
+	return res.Content, err
+}
+
+// CompleteResult is Complete plus finish reason and token usage.
+func (c *Client) CompleteResult(ctx context.Context, r Request) (Result, error) {
+	cr := chatRequest{
+		Model: r.Model, Messages: r.Messages, Tools: r.Tools,
+		MaxTokens: r.MaxTokens, ReasoningEffort: r.ReasoningEffort,
+	}
+	if r.JSONMode {
+		cr.ResponseFormat = &responseFormat{Type: "json_object"}
+	}
+	body, err := json.Marshal(cr)
 	if err != nil {
-		return "", fmt.Errorf("groq: marshal request: %w", err)
+		return Result{}, fmt.Errorf("groq: marshal request: %w", err)
 	}
 
 	retries := maxRetries
@@ -153,23 +228,26 @@ func (c *Client) Complete(ctx context.Context, r Request) (string, error) {
 	for attempt := 0; attempt <= retries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 		if err != nil {
-			return "", fmt.Errorf("groq: build request: %w", err)
+			return Result{}, fmt.Errorf("groq: build request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("groq: request failed: %w", err)
+			return Result{}, fmt.Errorf("groq: request failed: %w", err)
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < retries {
 			payload, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = fmt.Errorf("groq: rate limited: %s", string(payload))
+			lastErr = &StatusError{
+				StatusCode: resp.StatusCode, Body: string(payload),
+				RetryAfter: parseRetryAfter(resp.Header.Get("retry-after"), string(payload)),
+			}
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return Result{}, ctx.Err()
 			case <-time.After(retryBackoff[attempt]):
 			}
 			continue
@@ -178,17 +256,25 @@ func (c *Client) Complete(ctx context.Context, r Request) (string, error) {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			payload, _ := io.ReadAll(resp.Body)
-			return "", &StatusError{StatusCode: resp.StatusCode, Body: string(payload)}
+			se := &StatusError{StatusCode: resp.StatusCode, Body: string(payload)}
+			if resp.StatusCode == http.StatusTooManyRequests {
+				se.RetryAfter = parseRetryAfter(resp.Header.Get("retry-after"), se.Body)
+			}
+			return Result{}, se
 		}
 
 		var out chatResponse
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			return "", fmt.Errorf("groq: decode response: %w", err)
+			return Result{}, fmt.Errorf("groq: decode response: %w", err)
 		}
 		if len(out.Choices) == 0 {
-			return "", fmt.Errorf("groq: empty choices in response")
+			return Result{}, fmt.Errorf("groq: empty choices in response")
 		}
-		return out.Choices[0].Message.Content, nil
+		return Result{
+			Content:          out.Choices[0].Message.Content,
+			FinishReason:     out.Choices[0].FinishReason,
+			CompletionTokens: out.Usage.CompletionTokens,
+		}, nil
 	}
-	return "", fmt.Errorf("groq: exhausted retries: %w", lastErr)
+	return Result{}, fmt.Errorf("groq: exhausted retries: %w", lastErr)
 }

@@ -10,6 +10,8 @@ type APIResponse struct {
 	Success bool   `json:"success"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// RetryAfter (seconds) accompanies 429 responses so clients can retry automatically.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 // OK builds a successful response wrapping the given payload.

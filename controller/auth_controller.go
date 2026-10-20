@@ -120,6 +120,8 @@ func appErrStatus(err error) int {
 			return http.StatusNotFound
 		case "CONFLICT":
 			return http.StatusConflict
+		case "RATE_LIMITED":
+			return http.StatusTooManyRequests
 		}
 	}
 	return http.StatusInternalServerError

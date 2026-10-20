@@ -6,6 +6,7 @@ package config
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -38,11 +39,15 @@ type Config struct {
 	GroqAPIKey string
 	GroqModel  string
 
-	// Diagram generation model. When GroqDiagramWebSearch is true, Groq's
-	// built-in browser_search tool is enabled (supported on openai/gpt-oss-*).
-	// On any failure the service falls back to GroqModel without tools.
+	// Diagram generation model. GroqDiagramWebSearch is a server-side kill
+	// switch for Groq's built-in browser_search tool (openai/gpt-oss-*); users
+	// still opt in per request.
 	GroqDiagramModel     string
 	GroqDiagramWebSearch bool
+	// GroqDiagramFallbacks are tried in order (no tools, JSON mode) when the
+	// diagram model fails. Each Groq model has its own rate limit, so more
+	// models = more headroom. Defaults to GroqModel then qwen/qwen3.8-27b.
+	GroqDiagramFallbacks []string
 }
 
 // Load reads the .env file and returns a populated Config.
@@ -78,11 +83,24 @@ func Load() *Config {
 		GroqDiagramWebSearch: getEnv("GROQ_DIAGRAM_WEB_SEARCH", "true") == "true",
 	}
 
+	cfg.GroqDiagramFallbacks = splitList(getEnv("GROQ_DIAGRAM_FALLBACKS", cfg.GroqModel+",qwen/qwen3.8-27b"))
+
 	if cfg.DBURL == "" {
 		log.Fatal("[CONFIG] DB_URL is required")
 	}
 
 	return cfg
+}
+
+// splitList parses a comma-separated env value, dropping blanks.
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(key, fallback string) string {

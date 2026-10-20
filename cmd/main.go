@@ -141,13 +141,13 @@ func main() {
 	if groqClient == nil {
 		utils.Info("[AI]", "GROQ_API_KEY not set — diagram generation disabled")
 	} else {
-		utils.Info("[AI]", fmt.Sprintf("diagram model=%s web_search=%t fallback=%s",
-			cfg.GroqDiagramModel, cfg.GroqDiagramWebSearch, cfg.GroqModel))
+		utils.Info("[AI]", fmt.Sprintf("diagram model=%s web_search_allowed=%t fallbacks=%s",
+			cfg.GroqDiagramModel, cfg.GroqDiagramWebSearch, strings.Join(cfg.GroqDiagramFallbacks, ",")))
 		// Warn at boot (not on the first user request) if a configured model
 		// isn't available to this key — e.g. a retired or project-disabled model.
-		go checkGroqModels(groqClient, cfg.GroqDiagramModel, cfg.GroqModel)
+		go checkGroqModels(groqClient, append([]string{cfg.GroqDiagramModel}, cfg.GroqDiagramFallbacks...)...)
 	}
-	diagramSvc := service.NewDiagramService(groqClient, cfg.GroqDiagramModel, cfg.GroqDiagramWebSearch)
+	diagramSvc := service.NewDiagramService(groqClient, cfg.GroqDiagramModel, cfg.GroqDiagramFallbacks, cfg.GroqDiagramWebSearch)
 
 	// Controllers
 	healthCtrl := controller.NewHealthController()

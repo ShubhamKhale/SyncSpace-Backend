@@ -10,6 +10,8 @@ import "fmt"
 type AppError struct {
 	Code    string
 	Message string
+	// RetryAfter (seconds) is set on RATE_LIMITED errors.
+	RetryAfter int
 }
 
 func (e *AppError) Error() string {
@@ -37,6 +39,12 @@ func Unauthorized(msg string) *AppError {
 
 func Conflict(msg string) *AppError {
 	return &AppError{Code: "CONFLICT", Message: msg}
+}
+
+// RateLimited signals a temporary upstream limit; retryAfterSecs tells the
+// client how long to wait before retrying (mapped to HTTP 429).
+func RateLimited(msg string, retryAfterSecs int) *AppError {
+	return &AppError{Code: "RATE_LIMITED", Message: msg, RetryAfter: retryAfterSecs}
 }
 
 func Forbidden(msg string) *AppError {
