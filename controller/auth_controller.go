@@ -85,10 +85,6 @@ func (ac *AuthController) SignIn(c *gin.Context) {
 		return
 	}
 
-	fmt.Println("token :- ", token)
-	fmt.Println("sessionKey :- ", sessionKey)
-	fmt.Println("user :- ", user)
-
 	utils.Info(constants.LogTagAuth, "user signed in: "+user.ID)
 	c.JSON(http.StatusOK, data.OK(authResponse{
 		Token:      token,

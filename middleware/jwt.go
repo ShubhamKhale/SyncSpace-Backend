@@ -22,7 +22,6 @@ import (
 func JWTAuth(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
-		fmt.Println("Authorization header:", authHeader)
 		if !strings.HasPrefix(authHeader, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized,
 				data.Fail("missing or invalid Authorization header"))
@@ -30,7 +29,6 @@ func JWTAuth(jwtSecret string) gin.HandlerFunc {
 		}
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-		fmt.Println("Extracted token:", tokenStr)
 
 		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -61,7 +59,6 @@ func JWTAuth(jwtSecret string) gin.HandlerFunc {
 				data.Fail("token missing subject"))
 			return
 		}
-		fmt.Println("Authenticated user ID:", userID)
 
 		// Make user_id available to all downstream handlers and middleware.
 		c.Set(string(constants.ContextKeyUserID), userID)
