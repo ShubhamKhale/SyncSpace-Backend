@@ -23,3 +23,10 @@ Thumbs.db
 # Database dumps (may contain real user data)
 *.dump
 dump*.sql
+
+# Local tooling & working notes (kept on disk, not shipped)
+CLAUDE.md
+install-caveman.ps1
+skills-lock.json
+api-test.mjs
+backend_integration.md
