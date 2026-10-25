@@ -273,61 +273,68 @@ var errInvalidDiagramJSON = errors.New("model did not return valid diagram JSON"
 // ── Conversational diagram generation ────────────────────────────────────────
 
 // diagramConversationalSystemPrompt instructs the model to use a discriminated
-// {"action":"ask"|"diagram"} schema so the service can branch on each turn.
-const diagramConversationalSystemPrompt = `You are an interactive architecture diagram assistant.
+// {"action":"ask"|"diagram"} schema with an explicit decision policy so the
+// model reliably chooses to ask only when an answer would materially change
+// the graph (not for cosmetic unknowns). Based on: CLAM framework, CIGAsk
+// counterfactual information gain, and Eraser.io production patterns.
+const diagramConversationalSystemPrompt = `You are a diagram architecture planner.
 
-FIRST, assess whether the user's description contains enough detail to generate a meaningful diagram.
+Return ONLY one JSON object — no prose, no markdown, no explanation outside the JSON.
 
-If ANY of these are unclear, respond with ONLY this JSON (nothing else):
-{"action":"ask","question":"<your single targeted question>"}
+OPTION A — need clarification:
+{"action":"ask","question":"<single targeted question with 2-4 lettered options when possible>","missing":["<what is unknown>"]}
 
-Ask when:
-- Technology stack or specific services are not mentioned
-- Number and type of main components is ambiguous
-- Data flow direction or communication patterns are unclear
-- Deployment target (cloud provider, on-prem, containers) is unknown
-- User said something very generic like "backend architecture" or "my system"
+OPTION B — enough detail to generate:
+{"action":"diagram","title":"...","nodes":[...],"edges":[...],"assumptions":["<assumed X>","<assumed Y>"]}
 
-If the description IS specific enough, respond with ONLY this JSON:
-{"action":"diagram","title":"...","nodes":[...],"edges":[...]}
+DECISION POLICY — before choosing, silently verify all 6:
+1. Diagram type known? (system / data-flow / deployment / sequence / ER / workflow)
+2. Major components and responsibilities known?
+3. Request path or data flow known?
+4. External systems and protocols known?
+5. Deployment / cloud / storage constraints known?
+6. Any non-functional constraints that change architecture? (scale, latency, security, offline, cost)
 
-You may ask AT MOST 3 clarifying questions across the entire conversation.
-After 3 questions have been asked, you MUST generate the diagram immediately.
-When generating the diagram, use this schema for nodes/edges:
+Choose "ask" ONLY if a missing answer would materially change nodes, edges, grouping, or deployment topology.
+Choose "diagram" when remaining unknowns are cosmetic or can be safely assumed.
 
-Output schema for diagram:
-{
-  "action": "diagram",
-  "title": "string",
-  "nodes": [{ "id": "string", "label": "string", "shape": "rectangle|circle|diamond|cylinder|hexagon|parallelogram|triangle|rounded-rectangle|star" }],
-  "edges": [{ "source": "string", "target": "string", "label": "string" }]
-}
+Rules for "ask":
+- One question per turn, never two topics
+- Offer 2-4 concrete mutually exclusive lettered options when the answer space is bounded:
+  "What is the primary deployment shape?
+   A. Single monolithic backend + managed database
+   B. Modular services behind an API gateway
+   C. Event-driven services with a message broker
+   D. Serverless functions + managed services"
+- Never ask about styling, colors, fonts, or team names
+- Never ask a question whose answer is already present in the conversation
+- Never ask more than 3 questions total across the entire conversation
 
-Shape guide:
-- rectangle: services, APIs, applications, users, clients, servers, components
-- cylinder: databases, caches (Redis, Memcached), message queues (Kafka, RabbitMQ), storage
-- diamond: decisions, conditions, if/else, gateways
-- circle: start points, end points, events
-- hexagon: external systems, third-party services
-- rounded-rectangle: processes, jobs, workers
-- parallelogram: data inputs/outputs only
-- triangle: alerts, warnings only
-- star: highlights only
-
-Rules:
-- Node IDs: lowercase, no spaces, use underscores (e.g. "api_gateway", "user_service")
-- All edge source/target must exactly match a node ID
+Rules for "diagram":
 - Max 15 nodes
-- Keep edge labels short (1-3 words)
-- Use real, accurate component/service names when user names a specific technology
+- Node IDs: lowercase_snake_case (e.g. "api_gateway", "user_service")
+- All edge source/target must exactly match a node ID
+- Edge labels: 1-3 words
+- Use real service names when user mentions a specific technology
+- List every assumption made in the "assumptions" array (e.g. "PostgreSQL for persistence", "REST over HTTP", "AWS deployment")
+- Shape guide:
+  rectangle: services, APIs, apps, users, clients, servers, components
+  cylinder: databases, caches (Redis), queues (Kafka/RabbitMQ), storage
+  diamond: decisions, conditions, if/else, gateways
+  circle: start/end points, events
+  hexagon: external systems, third-party services
+  rounded-rectangle: processes, jobs, workers
+  parallelogram: data inputs/outputs only
+  triangle: alerts, warnings only
+  star: highlights only
 
-Example — specific enough, generate immediately:
-User: "Redis pub/sub with publisher and 2 subscribers"
-Response: {"action":"diagram","title":"Redis Pub/Sub","nodes":[{"id":"publisher","label":"Publisher","shape":"rectangle"},{"id":"redis","label":"Redis","shape":"cylinder"},{"id":"sub1","label":"Subscriber 1","shape":"rectangle"},{"id":"sub2","label":"Subscriber 2","shape":"rectangle"}],"edges":[{"source":"publisher","target":"redis","label":"PUBLISH"},{"source":"redis","target":"sub1","label":"MESSAGE"},{"source":"redis","target":"sub2","label":"MESSAGE"}]}
+Example — specific enough, generate immediately with assumptions:
+User: "I need a backend for my SaaS"
+Response: {"action":"diagram","title":"SaaS Backend","nodes":[{"id":"client","label":"Web Client","shape":"rectangle"},{"id":"api","label":"REST API","shape":"rectangle"},{"id":"db","label":"PostgreSQL","shape":"cylinder"},{"id":"cache","label":"Redis Cache","shape":"cylinder"},{"id":"auth","label":"Auth Service","shape":"rectangle"}],"edges":[{"source":"client","target":"api","label":"HTTPS"},{"source":"api","target":"db","label":"queries"},{"source":"api","target":"cache","label":"cache"},{"source":"api","target":"auth","label":"verify"}],"assumptions":["PostgreSQL for persistence","Redis for caching","REST over HTTP","single-region deployment"]}
 
-Example — too vague, ask first:
+Example — topology is ambiguous, ask first with options:
 User: "I need a backend architecture diagram"
-Response: {"action":"ask","question":"What technology stack are you using? (e.g. Go, Node.js, Python, Java)"}`
+Response: {"action":"ask","question":"What is the primary deployment shape?\nA. Single monolithic backend + managed database\nB. Modular services behind an API gateway\nC. Event-driven services with a message broker\nD. Serverless functions + managed services","missing":["deployment topology"]}`
 
 // ConversationTurn is one message in a diagram conversation.
 type ConversationTurn struct {
@@ -337,9 +344,10 @@ type ConversationTurn struct {
 
 // ConversationResponse is returned by GenerateDiagramConversational each turn.
 type ConversationResponse struct {
-	Action   string         `json:"action"`             // "ask" or "diagram"
-	Question string         `json:"question,omitempty"` // set when action=="ask"
-	Graph    map[string]any `json:"graph,omitempty"`    // set when action=="diagram"
+	Action      string         `json:"action"`                // "ask" or "diagram"
+	Question    string         `json:"question,omitempty"`    // set when action=="ask"
+	Graph       map[string]any `json:"graph,omitempty"`       // set when action=="diagram"
+	Assumptions []string       `json:"assumptions,omitempty"` // model's stated assumptions (action=="diagram")
 }
 
 // GenerateDiagramConversational handles one turn of a multi-turn diagram session.
@@ -417,7 +425,20 @@ func (s *DiagramService) GenerateDiagramConversational(
 		}
 	}
 
-	return parseConversationResponse(rawContent)
+	resp, err := parseConversationResponse(rawContent)
+	if err != nil {
+		return nil, errs.Internal(diagramUnavailableMsg)
+	}
+
+	// For diagram responses, run server-side graph validation and silently
+	// repair up to maxRepairRounds if the model produced invalid edges/IDs.
+	if resp.Action == "diagram" && resp.Graph != nil {
+		if validationErrs := validateGraph(resp.Graph); len(validationErrs) > 0 {
+			resp = s.repairDiagram(ctx, messages, resp, 1)
+		}
+	}
+
+	return resp, nil
 }
 
 // runChainMessages is like runChain but takes a pre-built messages slice instead
@@ -508,10 +529,136 @@ func parseConversationResponse(raw string) (*ConversationResponse, error) {
 		if !ok {
 			return nil, errInvalidDiagramJSON
 		}
-		return &ConversationResponse{Action: "diagram", Graph: g}, nil
+		resp := &ConversationResponse{Action: "diagram", Graph: g}
+		// Extract model-stated assumptions (new field in updated prompt).
+		if assumptionsRaw, ok := m["assumptions"].([]any); ok {
+			for _, a := range assumptionsRaw {
+				if s, ok := a.(string); ok && s != "" {
+					resp.Assumptions = append(resp.Assumptions, s)
+				}
+			}
+		}
+		return resp, nil
 	default:
 		return &ConversationResponse{Action: "ask", Question: strings.TrimSpace(raw)}, nil
 	}
+}
+
+// validateGraph runs deterministic checks on a parsed diagram graph and returns
+// a list of human-readable error strings. Empty slice means valid.
+func validateGraph(graph map[string]any) []string {
+	var errsOut []string
+
+	nodesRaw, _ := graph["nodes"].([]any)
+	if len(nodesRaw) == 0 {
+		return []string{"nodes array is empty"}
+	}
+
+	nodeIDs := make(map[string]bool, len(nodesRaw))
+	for i, nr := range nodesRaw {
+		n, ok := nr.(map[string]any)
+		if !ok {
+			errsOut = append(errsOut, fmt.Sprintf("node[%d] is not an object", i))
+			continue
+		}
+		id, _ := n["id"].(string)
+		if id == "" {
+			errsOut = append(errsOut, fmt.Sprintf("node[%d] has empty id", i))
+			continue
+		}
+		if nodeIDs[id] {
+			errsOut = append(errsOut, fmt.Sprintf("duplicate node id %q", id))
+		}
+		nodeIDs[id] = true
+	}
+
+	edgesRaw, _ := graph["edges"].([]any)
+	for i, er := range edgesRaw {
+		e, ok := er.(map[string]any)
+		if !ok {
+			continue
+		}
+		src, _ := e["source"].(string)
+		tgt, _ := e["target"].(string)
+		if src != "" && !nodeIDs[src] {
+			errsOut = append(errsOut, fmt.Sprintf("edge[%d] source %q references unknown node", i, src))
+		}
+		if tgt != "" && !nodeIDs[tgt] {
+			errsOut = append(errsOut, fmt.Sprintf("edge[%d] target %q references unknown node", i, tgt))
+		}
+		if src != "" && src == tgt {
+			errsOut = append(errsOut, fmt.Sprintf("edge[%d] is a self-loop on %q", i, src))
+		}
+	}
+
+	return errsOut
+}
+
+// repairDiagram sends a repair prompt containing the specific validation errors
+// and returns the corrected ConversationResponse (action=="diagram" guaranteed).
+// At most maxRepairRounds calls are made; on failure the original resp is returned.
+const maxRepairRounds = 2
+
+func (s *DiagramService) repairDiagram(
+	ctx context.Context,
+	messages []aiclient.Message,
+	resp *ConversationResponse,
+	round int,
+) *ConversationResponse {
+	validationErrs := validateGraph(resp.Graph)
+	if len(validationErrs) == 0 || round > maxRepairRounds {
+		return resp
+	}
+
+	utils.Info("[AI]", fmt.Sprintf("repairDiagram: round %d, %d error(s): %v", round, len(validationErrs), validationErrs))
+
+	repairPrompt := fmt.Sprintf(
+		"The diagram JSON you returned has validation errors. Fix them.\n\nErrors:\n%s\n\nReturn ONLY the corrected diagram JSON. Preserve all valid nodes and edges. Do not rename existing IDs. Make the smallest possible correction.",
+		strings.Join(validationErrs, "\n"),
+	)
+
+	repairMessages := append(messages,
+		aiclient.Message{Role: "assistant", Content: fmt.Sprintf(`{"action":"diagram",%s}`, mustJSON(resp.Graph))},
+		aiclient.Message{Role: "user", Content: repairPrompt},
+	)
+
+	req := groq.Request{
+		Model:           s.primary,
+		Messages:        repairMessages,
+		NoRetry:         true,
+		MaxTokens:       diagramMaxTokens,
+		ReasoningEffort: reasoningEffortFor(s.primary),
+		JSONMode:        true,
+	}
+	res, err := s.groqClient.CompleteResult(ctx, req)
+	if err != nil {
+		utils.Error("[AI]", fmt.Sprintf("repairDiagram round %d failed: %v", round, err))
+		return resp
+	}
+
+	repaired, err := parseConversationResponse(res.Content)
+	if err != nil || repaired.Action != "diagram" {
+		utils.Error("[AI]", fmt.Sprintf("repairDiagram round %d: could not parse repaired output", round))
+		return resp
+	}
+
+	// Recurse if still invalid (capped by maxRepairRounds).
+	return s.repairDiagram(ctx, messages, repaired, round+1)
+}
+
+// mustJSON marshals v to a JSON string fragment for embedding in repair prompts.
+// Panics only on types that can't be marshalled (safe here — v is map[string]any).
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	// Trim leading '{' and trailing '}' so caller can embed inside a wrapper object.
+	s := string(b)
+	if len(s) >= 2 {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 func truncate(s string, n int) string {
