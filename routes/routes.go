@@ -34,8 +34,9 @@ func SetupRoutes(
 	bfvc *controller.BoardFlowVoteController,
 	prc *controller.PresenceController,
 	wsc *controller.WsController,
-	aic *controller.AIController,
-	dgc *controller.DiagramController,
+	aic  *controller.AIController,
+	dgc  *controller.DiagramController,
+	facc *controller.FlowAIConversationController,
 	store *session.Store,
 ) {
 	r.GET(constants.URIHealth, hc.GetHealth)
@@ -158,6 +159,10 @@ func SetupRoutes(
 			// AI — diagram generation (Groq compound model only, no Ollama fallback)
 			jwtOnly.POST(constants.URIAIGenerateDiagram, dgc.GenerateDiagram)
 			jwtOnly.POST(constants.URIAIGenerateDiagramChat, dgc.GenerateDiagramConversational)
+
+			// AI — per-user, per-flow conversation persistence
+			jwtOnly.GET(constants.URIFlowAIConversation, facc.GetConversation)
+			jwtOnly.PUT(constants.URIFlowAIConversation, facc.SaveConversation)
 		}
 
 		// ── Protected routes: JWT + OrgContext + AES encryption ──────────────

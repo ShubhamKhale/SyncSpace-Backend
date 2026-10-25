@@ -89,6 +89,9 @@ const (
 	// URIAIGenerateDiagramChat is the multi-turn conversational variant.
 	URIAIGenerateDiagramChat = "/ai/generate-diagram/chat"
 
+	// Per-user, per-flow AI conversation persistence.
+	URIFlowAIConversation = "/flows/:flowId/ai-conversation"
+
 	// WebSocket
 	URIWebSocket = "/ws"
 

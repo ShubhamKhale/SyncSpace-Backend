@@ -148,6 +148,7 @@ func main() {
 		go checkGroqModels(groqClient, append([]string{cfg.GroqDiagramModel}, cfg.GroqDiagramFallbacks...)...)
 	}
 	diagramSvc := service.NewDiagramService(groqClient, cfg.GroqDiagramModel, cfg.GroqDiagramFallbacks, cfg.GroqDiagramWebSearch)
+	flowAIConvSvc := service.NewFlowAIConversationService(database.NewFlowAIConversationRepo(db.Pool))
 
 	// Controllers
 	healthCtrl := controller.NewHealthController()
@@ -169,6 +170,7 @@ func main() {
 	wsCtrl := controller.NewWsController(hub, cfg.JWTSecret)
 	aiCtrl := controller.NewAIController(aiSvc)
 	diagramCtrl := controller.NewDiagramController(diagramSvc)
+	flowAIConvCtrl := controller.NewFlowAIConversationController(flowAIConvSvc)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
 	gin.SetMode(cfg.GinMode)
@@ -186,7 +188,7 @@ func main() {
 		healthCtrl, boardCtrl, authCtrl, userCtrl, orgCtrl,
 		taskCtrl, dashboardCtrl, activityCtrl, analyticsCtrl,
 		notificationCtrl, linkedResourceCtrl, flowCtrl, flowVoteCtrl,
-		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, diagramCtrl, store,
+		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, diagramCtrl, flowAIConvCtrl, store,
 	)
 
 	// ── 5. Start server ───────────────────────────────────────────────────────
