@@ -26,7 +26,7 @@ func NewFlowAIConversationController(svc *service.FlowAIConversationService) *Fl
 // Returns {history, messages} or {history:[], messages:[]} when none exists yet.
 func (fc *FlowAIConversationController) GetConversation(c *gin.Context) {
 	userID := mustUserID(c)
-	flowID := c.Param("flowId")
+	flowID := c.Param("id")
 
 	conv, err := fc.svc.Get(c.Request.Context(), userID, flowID)
 	if err != nil {
@@ -58,7 +58,7 @@ type saveConversationRequest struct {
 // Upserts the conversation state for the authenticated user + flow.
 func (fc *FlowAIConversationController) SaveConversation(c *gin.Context) {
 	userID := mustUserID(c)
-	flowID := c.Param("flowId")
+	flowID := c.Param("id")
 
 	var req saveConversationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

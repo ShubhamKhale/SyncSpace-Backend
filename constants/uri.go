@@ -90,7 +90,7 @@ const (
 	URIAIGenerateDiagramChat = "/ai/generate-diagram/chat"
 
 	// Per-user, per-flow AI conversation persistence.
-	URIFlowAIConversation = "/flows/:flowId/ai-conversation"
+	URIFlowAIConversation = "/flows/:id/ai-conversation"
 
 	// WebSocket
 	URIWebSocket = "/ws"
