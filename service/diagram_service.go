@@ -270,6 +270,250 @@ func (s *DiagramService) attempt(ctx context.Context, prompt string, a diagramAt
 
 var errInvalidDiagramJSON = errors.New("model did not return valid diagram JSON")
 
+// ── Conversational diagram generation ────────────────────────────────────────
+
+// diagramConversationalSystemPrompt instructs the model to use a discriminated
+// {"action":"ask"|"diagram"} schema so the service can branch on each turn.
+const diagramConversationalSystemPrompt = `You are an interactive architecture diagram assistant.
+
+FIRST, assess whether the user's description contains enough detail to generate a meaningful diagram.
+
+If ANY of these are unclear, respond with ONLY this JSON (nothing else):
+{"action":"ask","question":"<your single targeted question>"}
+
+Ask when:
+- Technology stack or specific services are not mentioned
+- Number and type of main components is ambiguous
+- Data flow direction or communication patterns are unclear
+- Deployment target (cloud provider, on-prem, containers) is unknown
+- User said something very generic like "backend architecture" or "my system"
+
+If the description IS specific enough, respond with ONLY this JSON:
+{"action":"diagram","title":"...","nodes":[...],"edges":[...]}
+
+You may ask AT MOST 3 clarifying questions across the entire conversation.
+After 3 questions have been asked, you MUST generate the diagram immediately.
+When generating the diagram, use this schema for nodes/edges:
+
+Output schema for diagram:
+{
+  "action": "diagram",
+  "title": "string",
+  "nodes": [{ "id": "string", "label": "string", "shape": "rectangle|circle|diamond|cylinder|hexagon|parallelogram|triangle|rounded-rectangle|star" }],
+  "edges": [{ "source": "string", "target": "string", "label": "string" }]
+}
+
+Shape guide:
+- rectangle: services, APIs, applications, users, clients, servers, components
+- cylinder: databases, caches (Redis, Memcached), message queues (Kafka, RabbitMQ), storage
+- diamond: decisions, conditions, if/else, gateways
+- circle: start points, end points, events
+- hexagon: external systems, third-party services
+- rounded-rectangle: processes, jobs, workers
+- parallelogram: data inputs/outputs only
+- triangle: alerts, warnings only
+- star: highlights only
+
+Rules:
+- Node IDs: lowercase, no spaces, use underscores (e.g. "api_gateway", "user_service")
+- All edge source/target must exactly match a node ID
+- Max 15 nodes
+- Keep edge labels short (1-3 words)
+- Use real, accurate component/service names when user names a specific technology
+
+Example — specific enough, generate immediately:
+User: "Redis pub/sub with publisher and 2 subscribers"
+Response: {"action":"diagram","title":"Redis Pub/Sub","nodes":[{"id":"publisher","label":"Publisher","shape":"rectangle"},{"id":"redis","label":"Redis","shape":"cylinder"},{"id":"sub1","label":"Subscriber 1","shape":"rectangle"},{"id":"sub2","label":"Subscriber 2","shape":"rectangle"}],"edges":[{"source":"publisher","target":"redis","label":"PUBLISH"},{"source":"redis","target":"sub1","label":"MESSAGE"},{"source":"redis","target":"sub2","label":"MESSAGE"}]}
+
+Example — too vague, ask first:
+User: "I need a backend architecture diagram"
+Response: {"action":"ask","question":"What technology stack are you using? (e.g. Go, Node.js, Python, Java)"}`
+
+// ConversationTurn is one message in a diagram conversation.
+type ConversationTurn struct {
+	Role    string `json:"role"`    // "user" or "assistant"
+	Content string `json:"content"` // raw text or raw JSON from assistant
+}
+
+// ConversationResponse is returned by GenerateDiagramConversational each turn.
+type ConversationResponse struct {
+	Action   string         `json:"action"`             // "ask" or "diagram"
+	Question string         `json:"question,omitempty"` // set when action=="ask"
+	Graph    map[string]any `json:"graph,omitempty"`    // set when action=="diagram"
+}
+
+// GenerateDiagramConversational handles one turn of a multi-turn diagram session.
+// history is the full conversation so far (user + assistant turns). Each call
+// returns either a clarifying question or the final diagram JSON.
+func (s *DiagramService) GenerateDiagramConversational(
+	ctx context.Context,
+	history []ConversationTurn,
+	opts DiagramOptions,
+) (*ConversationResponse, error) {
+	if s.groqClient == nil {
+		return nil, errs.Internal("diagram generation requires GROQ_API_KEY to be configured")
+	}
+	if len(history) == 0 {
+		return nil, errs.BadRequest("conversation history cannot be empty")
+	}
+
+	// Count prior "ask" turns to enforce the 3-question hard cap.
+	askCount := 0
+	for _, t := range history {
+		if t.Role == "assistant" {
+			var m map[string]any
+			if json.Unmarshal([]byte(t.Content), &m) == nil {
+				if m["action"] == "ask" {
+					askCount++
+				}
+			}
+		}
+	}
+
+	// Build Groq messages: system prompt + full history.
+	sysPrompt := diagramConversationalSystemPrompt
+	if askCount >= 3 {
+		sysPrompt += "\n\nYou have already asked 3 questions. Generate the diagram NOW. Do not ask any more questions."
+	}
+	messages := make([]aiclient.Message, 0, len(history)+1)
+	messages = append(messages, aiclient.Message{Role: "system", Content: sysPrompt})
+	for _, t := range history {
+		messages = append(messages, aiclient.Message{Role: t.Role, Content: t.Content})
+	}
+
+	search := opts.WebSearch && s.searchAllowed
+	attempts := []diagramAttempt{{model: s.primary, search: search}}
+	for _, m := range s.fallbacks {
+		if m != "" && m != s.primary {
+			attempts = append(attempts, diagramAttempt{model: m})
+		}
+	}
+
+	rawContent, minWait, allLimited, err := s.runChainMessages(ctx, messages, attempts)
+	if err != nil {
+		// Same rate-limit retry logic as GenerateDiagram.
+		if allLimited && minWait > 0 && minWait <= maxServerWait {
+			utils.Info("[AI]", fmt.Sprintf("GenerateDiagramConversational: all models rate-limited, waiting %s", minWait.Round(100*time.Millisecond)))
+			select {
+			case <-ctx.Done():
+				return nil, errs.Internal(diagramUnavailableMsg)
+			case <-time.After(minWait + 300*time.Millisecond):
+			}
+			retry := make([]diagramAttempt, len(attempts))
+			for i, a := range attempts {
+				retry[i] = diagramAttempt{model: a.model}
+			}
+			rawContent, minWait, allLimited, err = s.runChainMessages(ctx, messages, retry)
+		}
+		if err != nil {
+			if allLimited {
+				secs := int(math.Ceil(minWait.Seconds()))
+				if secs < 3 {
+					secs = 3
+				}
+				return nil, errs.RateLimited("AI is busy right now — too many requests this minute.", secs)
+			}
+			return nil, errs.Internal(diagramUnavailableMsg)
+		}
+	}
+
+	return parseConversationResponse(rawContent)
+}
+
+// runChainMessages is like runChain but takes a pre-built messages slice instead
+// of a single prompt string. Used by the conversational flow.
+func (s *DiagramService) runChainMessages(
+	ctx context.Context,
+	messages []aiclient.Message,
+	attempts []diagramAttempt,
+) (string, time.Duration, bool, error) {
+	var minWait time.Duration
+	allLimited := true
+	var lastErr error
+
+	for _, a := range attempts {
+		content, err := s.attemptMessages(ctx, messages, a)
+		if err == nil {
+			return content, 0, false, nil
+		}
+		if ctx.Err() != nil {
+			return "", 0, false, ctx.Err()
+		}
+		lastErr = err
+		utils.Error("[AI]", fmt.Sprintf("GenerateDiagramConversational: %s (search=%t) failed: %s", a.model, a.search, failureKind(err)), err)
+
+		var statusErr *groq.StatusError
+		if errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusTooManyRequests || statusErr.StatusCode == http.StatusRequestEntityTooLarge) {
+			if statusErr.RetryAfter > 0 && (minWait == 0 || statusErr.RetryAfter < minWait) {
+				minWait = statusErr.RetryAfter
+			}
+			continue
+		}
+		allLimited = false
+	}
+	return "", minWait, allLimited, lastErr
+}
+
+// attemptMessages runs one model attempt with a pre-built messages slice.
+func (s *DiagramService) attemptMessages(ctx context.Context, messages []aiclient.Message, a diagramAttempt) (string, error) {
+	req := groq.Request{
+		Model:           a.model,
+		Messages:        messages,
+		NoRetry:         true,
+		MaxTokens:       diagramMaxTokens,
+		ReasoningEffort: reasoningEffortFor(a.model),
+		JSONMode:        !a.search, // JSON mode incompatible with tools
+	}
+	if a.search {
+		msgs := make([]aiclient.Message, len(messages))
+		copy(msgs, messages)
+		msgs[0].Content = diagramSearchPrompt + msgs[0].Content
+		req.Messages = msgs
+		req.Tools = []groq.Tool{groq.ToolBrowserSearch}
+	}
+	res, err := s.groqClient.CompleteResult(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return res.Content, nil
+}
+
+// parseConversationResponse parses a discriminated {"action":"ask"|"diagram"} reply.
+// Falls back to treating unrecognised plain-text output as an implicit question so
+// the conversation keeps moving rather than hard-failing.
+func parseConversationResponse(raw string) (*ConversationResponse, error) {
+	clean := cleanJSONFences(raw)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(clean), &m); err != nil {
+		if block, ok := trailingJSONBlock(raw); ok {
+			if err2 := json.Unmarshal([]byte(block), &m); err2 != nil {
+				// Plain-text fallback — keep conversation moving.
+				return &ConversationResponse{Action: "ask", Question: strings.TrimSpace(raw)}, nil
+			}
+		} else {
+			return &ConversationResponse{Action: "ask", Question: strings.TrimSpace(raw)}, nil
+		}
+	}
+
+	action, _ := m["action"].(string)
+	switch action {
+	case "ask":
+		q, _ := m["question"].(string)
+		if q == "" {
+			return &ConversationResponse{Action: "ask", Question: strings.TrimSpace(raw)}, nil
+		}
+		return &ConversationResponse{Action: "ask", Question: q}, nil
+	case "diagram":
+		g, ok := parseGraph(raw)
+		if !ok {
+			return nil, errInvalidDiagramJSON
+		}
+		return &ConversationResponse{Action: "diagram", Graph: g}, nil
+	default:
+		return &ConversationResponse{Action: "ask", Question: strings.TrimSpace(raw)}, nil
+	}
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

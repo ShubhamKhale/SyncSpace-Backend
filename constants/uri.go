@@ -86,6 +86,8 @@ const (
 
 	// AI diagram generation (Groq compound model, web-search-backed)
 	URIAIGenerateDiagram = "/ai/generate-diagram"
+	// URIAIGenerateDiagramChat is the multi-turn conversational variant.
+	URIAIGenerateDiagramChat = "/ai/generate-diagram/chat"
 
 	// WebSocket
 	URIWebSocket = "/ws"

@@ -157,6 +157,7 @@ func SetupRoutes(
 
 			// AI — diagram generation (Groq compound model only, no Ollama fallback)
 			jwtOnly.POST(constants.URIAIGenerateDiagram, dgc.GenerateDiagram)
+			jwtOnly.POST(constants.URIAIGenerateDiagramChat, dgc.GenerateDiagramConversational)
 		}
 
 		// ── Protected routes: JWT + OrgContext + AES encryption ──────────────
