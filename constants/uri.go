@@ -92,6 +92,25 @@ const (
 	// Per-user, per-flow AI conversation persistence.
 	URIFlowAIConversation = "/flows/:id/ai-conversation"
 
+	// Attendance
+	URIAttendanceCheckIn  = "/attendance/check-in"
+	URIAttendanceCheckOut = "/attendance/check-out"
+	URIAttendanceMe       = "/attendance/me"
+	URIAttendanceTeam     = "/attendance/team"
+
+	// Leave management
+	URILeaveTypes         = "/leave/types"
+	URILeaveTypeByID      = "/leave/types/:id"
+	URILeaveBalances      = "/leave/balances"
+	URILeaveBalanceAdjust = "/leave/balances/:userId"
+	URILeaveRequests      = "/leave/requests"
+	URILeaveRequestsMe    = "/leave/requests/me"
+	URILeaveRequestApprove = "/leave/requests/:id/approve"
+	URILeaveRequestDeny    = "/leave/requests/:id/deny"
+
+	// Member availability (for task assignment)
+	URIMemberAvailability = "/members/availability"
+
 	// WebSocket
 	URIWebSocket = "/ws"
 

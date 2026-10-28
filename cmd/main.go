@@ -150,6 +150,14 @@ func main() {
 	diagramSvc := service.NewDiagramService(groqClient, cfg.GroqDiagramModel, cfg.GroqDiagramFallbacks, cfg.GroqDiagramWebSearch)
 	flowAIConvSvc := service.NewFlowAIConversationService(database.NewFlowAIConversationRepo(db.Pool))
 
+	// Attendance + Leave
+	attendanceRepo := database.NewAttendanceRepo(db.Pool)
+	leaveTypeRepo := database.NewLeaveTypeRepo(db.Pool)
+	leaveBalanceRepo := database.NewLeaveBalanceRepo(db.Pool)
+	leaveRequestRepo := database.NewLeaveRequestRepo(db.Pool)
+	attendanceSvc := service.NewAttendanceService(attendanceRepo, leaveRequestRepo, orgRepo)
+	leaveSvc := service.NewLeaveService(leaveTypeRepo, leaveBalanceRepo, leaveRequestRepo)
+
 	// Controllers
 	healthCtrl := controller.NewHealthController()
 	authCtrl := controller.NewAuthController(authSvc)
@@ -171,6 +179,8 @@ func main() {
 	aiCtrl := controller.NewAIController(aiSvc)
 	diagramCtrl := controller.NewDiagramController(diagramSvc)
 	flowAIConvCtrl := controller.NewFlowAIConversationController(flowAIConvSvc)
+	attendanceCtrl := controller.NewAttendanceController(attendanceSvc)
+	leaveCtrl := controller.NewLeaveController(leaveSvc)
 
 	// ── 4. Router ─────────────────────────────────────────────────────────────
 	gin.SetMode(cfg.GinMode)
@@ -188,7 +198,8 @@ func main() {
 		healthCtrl, boardCtrl, authCtrl, userCtrl, orgCtrl,
 		taskCtrl, dashboardCtrl, activityCtrl, analyticsCtrl,
 		notificationCtrl, linkedResourceCtrl, flowCtrl, flowVoteCtrl,
-		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, diagramCtrl, flowAIConvCtrl, store,
+		boardFlowCtrl, boardFlowVoteCtrl, presenceCtrl, wsCtrl, aiCtrl, diagramCtrl, flowAIConvCtrl,
+		attendanceCtrl, leaveCtrl, store,
 	)
 
 	// ── 5. Start server ───────────────────────────────────────────────────────

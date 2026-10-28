@@ -37,6 +37,8 @@ func SetupRoutes(
 	aic  *controller.AIController,
 	dgc  *controller.DiagramController,
 	facc *controller.FlowAIConversationController,
+	atc  *controller.AttendanceController,
+	lvc  *controller.LeaveController,
 	store *session.Store,
 ) {
 	r.GET(constants.URIHealth, hc.GetHealth)
@@ -163,6 +165,27 @@ func SetupRoutes(
 			// AI — per-user, per-flow conversation persistence
 			jwtOnly.GET(constants.URIFlowAIConversation, facc.GetConversation)
 			jwtOnly.PUT(constants.URIFlowAIConversation, facc.SaveConversation)
+
+			// Attendance
+			jwtOnly.POST(constants.URIAttendanceCheckIn, atc.CheckIn)
+			jwtOnly.POST(constants.URIAttendanceCheckOut, atc.CheckOut)
+			jwtOnly.GET(constants.URIAttendanceMe, atc.GetMyStatus)
+			jwtOnly.GET(constants.URIAttendanceTeam, atc.GetTeamStatus)
+
+			// Leave management (static routes before param routes)
+			jwtOnly.GET(constants.URILeaveTypes, lvc.GetLeaveTypes)
+			jwtOnly.POST(constants.URILeaveTypes, lvc.CreateLeaveType)
+			jwtOnly.PATCH(constants.URILeaveTypeByID, lvc.UpdateLeaveType)
+			jwtOnly.GET(constants.URILeaveBalances, lvc.GetMyBalances)
+			jwtOnly.PATCH(constants.URILeaveBalanceAdjust, lvc.AdjustBalance)
+			jwtOnly.GET(constants.URILeaveRequestsMe, lvc.GetMyRequests)
+			jwtOnly.GET(constants.URILeaveRequests, lvc.GetTeamRequests)
+			jwtOnly.POST(constants.URILeaveRequests, lvc.RequestLeave)
+			jwtOnly.PATCH(constants.URILeaveRequestApprove, lvc.ApproveLeave)
+			jwtOnly.PATCH(constants.URILeaveRequestDeny, lvc.DenyLeave)
+
+			// Member availability
+			jwtOnly.GET(constants.URIMemberAvailability, atc.GetMemberAvailability)
 		}
 
 		// ── Protected routes: JWT + OrgContext + AES encryption ──────────────
